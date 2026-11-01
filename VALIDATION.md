@@ -125,3 +125,11 @@ Generic outline roles are inferred from material names; gloves/clothes take prec
 Private models, reference images, camera fixtures and derived reports/captures remain under ignored local data directories. Portable enhancement copies retain the original PMX bytes and are not published in this repository. See PHYSICS.md and the plugin README for preparation, supported constraints and licensing.
 
 Final engine automation: 27 tests per project (26 successes and one success with the expected incompatible-profile warning), zero failures and zero tests not run. Reports remain local under Saved/Tests/MultiModelAcceptedFinal. Native UMT WorldSnapshot CTest passes independently. Both editor targets compile successfully. These unit checks do not override the failed Phainon cape audit.
+
+## Follow-up: capture crash and static stability
+
+The subsequent real capture crash occurs at the OpenCV VideoCapture constructor, before opening the camera. Capture preflight incorrectly freed a borrowed module handle returned by UE. It now only queries the loaded module; OpenCVHelper retains ownership. A native test checks the actual OpenCV DLL 6,000 times, verifies that its constructor mapping stays loaded until the last owner releases it, and confirms final unloading without a leaked reference. Negative controls detect the old release and an added-reference leak. No camera is accessed by this test. Both editor targets build and both 27-test suites pass again under `Saved/Tests/OpenCvLifetimeFinal`.
+
+The viewer module now compiles independent translation units: committing all files caused adaptive unity builds to merge unrelated file-local Slate helpers with identical names. This is a build setting change, not a runtime UI change.
+
+The earlier joint-position residual targets did not validate static stability. A subsequent 60-second static audit reproduces sustained Sparkle sleeve oscillation: approximately 1.9 mm/frame displacement P95 and 144 degrees/second angular-speed P95. Old Bullet 6DoF limits repeatedly disable the angular constraint inside its valid range, then correct the next overshoot. Independent Blender/MMD Tools tests show that the same source model can settle. Candidate solver changes remain isolated until separately accepted; previous residual passes must not be read as proof of jitter-free physics.

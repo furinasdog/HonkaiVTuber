@@ -7,6 +7,8 @@ public class HonkaiRendering : ModuleRules
 	public HonkaiRendering(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		// Viewer and mapping files have independent file-local Slate helpers.
+		bUseUnity = false;
 
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"Core",
