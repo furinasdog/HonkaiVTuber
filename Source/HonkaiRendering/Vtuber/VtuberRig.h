@@ -156,6 +156,7 @@ private:
     void UpdateTracking(float DeltaTime);
     void BuildDefaultMappings();
     void BuildBodyMappings();
+    void BuildIdleArmPose();
     void RefreshHeadReference();
     float MapResponse(FName Channel, float Input, float DeltaTime, bool bTracked, bool bRotation, bool bFilter = true);
     UPROPERTY() TObjectPtr<USkeletalMeshComponent> Mesh;
@@ -168,6 +169,8 @@ private:
     TSet<FName> AppliedMorphs;
     FName HeadBone;
     TMap<FName, FName> BodyBones;
+    // Display-only local targets; source bind transforms remain the tracking reference.
+    TMap<FName, FQuat> IdleArmLocalRotations;
     TMap<FName, FQuat> SmoothedBody;
     TSet<FName> TrackedBodyChannels;
     TArray<FTransform> ReferenceComponentPose;

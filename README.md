@@ -136,6 +136,10 @@ python Scripts/compare_renders.py local-manifest.json Saved/Comparisons/comparis
 
 ## 动捕与 PMX 物理准备
 
+H 显示浮动界面后，可从主面板的“识别结果”或“捕捉 → 打开识别结果”查看摄像头画面、上半身／双手关键点、头部角度及表情数值。预览与动捕共用摄像头，关闭或隐藏面板不停止动捕；停止或过期时清除旧画面。预览属于界面，不包含在角色 Spout 输出中。默认启动仍只显示角色。
+
+没有动捕输入时，角色使用通用的放松手臂姿态（上臂离身体约20°）；追踪接管后按输入运动，失追时平滑返回默认姿态，不修改源模型。
+
 两个项目共用独立的 [HonkaiMotionCapture](https://github.com/furinasdog/HonkaiMotionCapture) 插件。初始化 submodule 后，用插件的 `Scripts/Stage-LocalRuntime.ps1` 按哈希准备本地 SDK DLL 和三种模型。默认在 UE 进程内后台识别，不运行单独 EXE，也不通过 JSON 文件交换快照。它目前使用动态 SDK；静态 SDK 构建未实现。旧 EXE 只作为准备失败时明确报告的回退。SDK 预编译包包含 usage telemetry，进程内模式不具备旧 AppContainer 的网络隔离，详见插件说明。
 
 运行 `Scripts/Prepare-PmxPhysics.ps1` 后再编译 UE，以启用原 PMX 刚体、关节和碰撞组的 Bullet 物理；参见 [PHYSICS.md](PHYSICS.md)。没有这些物理数据的模型不会自动得到布料或头发求解。用户模型、参考图、视频、SDK 二进制、模型权重和本地验收证据均不进入源码仓库。

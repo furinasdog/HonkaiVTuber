@@ -12,7 +12,7 @@
 [submodule "Tools/UMTNativePlugin"]
 	path = Tools/UMTNativePlugin
 	url = https://github.com/furinasdog/UMTNativePlugin.git
-	branch = honkai-rendering/current-world-snapshot
+	branch = honkai-rendering/spring2-stability
 [submodule "Plugins/HonkaiMotionCapture"]
 	path = Plugins/HonkaiMotionCapture
 	url = https://github.com/furinasdog/HonkaiMotionCapture.git

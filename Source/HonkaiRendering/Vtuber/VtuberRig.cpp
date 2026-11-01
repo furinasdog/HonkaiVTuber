@@ -591,6 +591,13 @@ bool UVtuberRigComponent::Initialize(USkeletalMeshComponent* InMesh, const FStri
     ResetAllChannelResponses();
     ProfileWarning.Reset();
     if (!ProfilePath.IsEmpty() && FPaths::FileExists(ProfilePath)) LoadProfile(ProfilePath, ProfileWarning);
+    const auto& Rest = Mesh->GetSkeletalMeshAsset()->GetRefSkeleton();
+    for (const auto& Idle : IdleArmLocalRotations)
+    {
+        const int32 Index = Rest.FindBoneIndex(BodyBones.FindRef(Idle.Key));
+        if (Index != INDEX_NONE)
+            SmoothedBody.Add(Idle.Key, (Rest.GetRefBonePose()[Index].GetRotation().Inverse() * Idle.Value).GetNormalized());
+    }
     Mesh->bPauseAnims = false;
     Mesh->SetAnimationMode(EAnimationMode::AnimationBlueprint);
     Mesh->SetAnimInstanceClass(UVtuberAnimInstance::StaticClass());
@@ -608,6 +615,8 @@ bool UVtuberRigComponent::Initialize(USkeletalMeshComponent* InMesh, const FStri
         // Avatar collision uses imported colliders; world queries do not belong on animation workers.
         Instance->SetVrmSpringBoneBool(false, true, false, true);
     }
+    // Publish the resting arms before the proxy seeds its secondary-physics pose.
+    UpdateTracking(1.f / 60.f);
     return true;
 }
 
@@ -636,6 +645,46 @@ void UVtuberRigComponent::BuildBodyMappings()
     {
         const FName Found = FindAlias(Available, Definition.Aliases);
         if (!Found.IsNone()) BodyBones.Add(Definition.Key, Found);
+    }
+    BuildIdleArmPose();
+}
+
+void UVtuberRigComponent::BuildIdleArmPose()
+{
+    IdleArmLocalRotations.Reset();
+    if (!Mesh || !Mesh->GetSkeletalMeshAsset()) return;
+    const auto& Ref = Mesh->GetSkeletalMeshAsset()->GetRefSkeleton();
+    if (ReferenceComponentPose.Num() != Ref.GetNum()) return;
+    auto Index = [&](FName Channel) { return Ref.FindBoneIndex(BodyBones.FindRef(Channel)); };
+    const int32 Left = Index(TEXT("upperarm_l")), Right = Index(TEXT("upperarm_r"));
+    if (Left == INDEX_NONE || Right == INDEX_NONE || Left == Right) return;
+    const FVector Across = (ReferenceComponentPose[Left].GetLocation() - ReferenceComponentPose[Right].GetLocation()).GetSafeNormal();
+    if (Across.IsNearlyZero()) return;
+    FVector Up = FVector::UpVector;
+    const int32 Spine = Index(TEXT("spine"));
+    const int32 Top = !HeadBone.IsNone() ? Ref.FindBoneIndex(HeadBone) : Index(TEXT("neck"));
+    if (Spine != INDEX_NONE && Top != INDEX_NONE)
+        Up = ReferenceComponentPose[Top].GetLocation() - ReferenceComponentPose[Spine].GetLocation();
+    Up = (Up - Across * FVector::DotProduct(Up, Across)).GetSafeNormal();
+    if (Up.IsNearlyZero()) return;
+    const float Angle = FMath::DegreesToRadians(20.f);
+    for (int32 Side = 0; Side < 2; ++Side)
+    {
+        const FName Channel = Side == 0 ? TEXT("upperarm_l") : TEXT("upperarm_r");
+        const int32 Upper = Side == 0 ? Left : Right;
+        const int32 Lower = Index(Side == 0 ? TEXT("lowerarm_l") : TEXT("lowerarm_r"));
+        if (Lower == INDEX_NONE) continue;
+        int32 Ancestor = Ref.GetParentIndex(Lower);
+        while (Ancestor != INDEX_NONE && Ancestor != Upper) Ancestor = Ref.GetParentIndex(Ancestor);
+        if (Ancestor != Upper) continue;
+        const FVector From = (ReferenceComponentPose[Lower].GetLocation() - ReferenceComponentPose[Upper].GetLocation()).GetSafeNormal();
+        if (From.IsNearlyZero()) continue;
+        const FVector Outward = Side == 0 ? Across : -Across;
+        const FVector Direction = Outward * FMath::Sin(Angle) - Up * FMath::Cos(Angle);
+        const FQuat Target = (FQuat::FindBetweenNormals(From, Direction) * ReferenceComponentPose[Upper].GetRotation()).GetNormalized();
+        const int32 Parent = Ref.GetParentIndex(Upper);
+        const FQuat ParentCS = Parent == INDEX_NONE ? FQuat::Identity : ReferenceComponentPose[Parent].GetRotation();
+        IdleArmLocalRotations.Add(Channel, (ParentCS.Inverse() * Target).GetNormalized());
     }
 }
 
@@ -829,6 +878,7 @@ bool UVtuberRigComponent::SetHeadBone(FName Bone)
     if (!Bone.IsNone() && !GetAvailableBones().Contains(Bone)) return false;
     HeadBone = Bone;
     RefreshHeadReference();
+    BuildIdleArmPose();
     return true;
 }
 
@@ -845,6 +895,7 @@ bool UVtuberRigComponent::SetBodyBone(FName Channel, FName Bone)
     if (!bKnown || (!Bone.IsNone() && !GetAvailableBones().Contains(Bone))) return false;
     if (Bone.IsNone()) BodyBones.Remove(Channel);
     else BodyBones.Add(Channel, Bone);
+    BuildIdleArmPose();
     return true;
 }
 
@@ -938,7 +989,7 @@ void UVtuberRigComponent::UpdateTracking(float DeltaTime)
     const bool PoseTracking = Fresh && Latest.bPoseTracked && Settings.bBodyEnabled;
     const bool HandTracking = Fresh && Settings.bHandsEnabled;
     const auto& Ref = Mesh->GetSkeletalMeshAsset()->GetRefSkeleton();
-    if (ReferenceComponentPose.Num() != Ref.GetNum()) RefreshHeadReference();
+    if (ReferenceComponentPose.Num() != Ref.GetNum()) { RefreshHeadReference(); BuildIdleArmPose(); }
     const auto& Rest = Ref.GetRefBonePose();
     TMap<int32, FQuat> RawTargets;
     TrackedBodyChannels.Reset();
@@ -1106,7 +1157,10 @@ void UVtuberRigComponent::UpdateTracking(float DeltaTime)
                 ShortAxisAngle(BindLocal.Inverse() * DesiredLocal, Axis, Angle);
                 const float Mapped = MapResponse(*Channel, Angle / PI, DeltaTime, Tracked, true, false);
                 const float Limit = FMath::DegreesToRadians(LocalLimit(*Channel));
-                const FQuat TargetDelta(Axis, FMath::Clamp(Mapped * PI, -Limit, Limit));
+                FQuat TargetDelta(Axis, FMath::Clamp(Mapped * PI, -Limit, Limit));
+                if (!Tracked || !GetChannelResponse(*Channel).bEnabled)
+                    if (const FQuat* Idle = IdleArmLocalRotations.Find(*Channel))
+                        TargetDelta = (BindLocal.Inverse() * *Idle).GetNormalized();
                 FQuat& Smooth = SmoothedBody.FindOrAdd(*Channel, FQuat::Identity);
                 const float Seconds = Tracked && GetChannelResponse(*Channel).bEnabled ? GetChannelResponse(*Channel).SmoothingSeconds : Settings.ReturnSeconds;
                 const float Alpha = Seconds <= SMALL_NUMBER ? 1.f : 1.f - FMath::Exp(-FMath::Min(DeltaTime, .25f) / Seconds);
@@ -1383,6 +1437,7 @@ bool UVtuberRigComponent::LoadProfile(const FString& Path, FString& Error)
     ResponseFiltered.Reset();
     ProfilePath = Path;
     RefreshHeadReference();
+    BuildIdleArmPose();
     return true;
 }
 
@@ -1818,21 +1873,77 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     {
         Frame.TimestampSeconds = FPlatformTime::Seconds(); Rig->SubmitSnapshot(Frame); Rig->UpdateTracking(1.f / 60.f);
     };
-    auto Evaluate = [&]()
+    auto Evaluate = [&](float DeltaSeconds = 1.f / 60.f)
     {
         TArray<FTransform> Result;
         FMemMark Mark(FMemStack::Get());
         TArray<FBoneIndexType> Required; for (int32 I = 0; I < GlobalRest.Num(); ++I) Required.Add(I);
         FBoneContainer Bones; Bones.InitializeTo(Required, UE::Anim::FCurveFilterSettings(), *Skeleton);
-        FVtuberAnimProxy Proxy(Instance); Proxy.PreUpdate(Instance, 1.f / 60.f);
+        FVtuberAnimProxy Proxy(Instance); Proxy.PreUpdate(Instance, DeltaSeconds);
         FPoseContext Output(Bones); Output.AnimInstanceProxy = &Proxy;
         Proxy.Evaluate(Output);
         for (int32 I = 0; I < GlobalRest.Num(); ++I) Result.Add(Output.Pose[Bones.MakeCompactPoseIndex(FMeshPoseBoneIndex(I))]);
         return Result;
     };
-    Submit(Neutral);
-    const auto& Rest = Asset->GetRefSkeleton().GetRefBonePose();
+    const TArray<FTransform> Rest = Asset->GetRefSkeleton().GetRefBonePose();
+    auto ComponentPose = [&](const TArray<FTransform>& Local)
+    {
+        TArray<FTransform> Result;
+        for (int32 I = 0; I < Local.Num(); ++I)
+        {
+            const int32 Parent = Asset->GetRefSkeleton().GetParentIndex(I);
+            Result.Add(Parent == INDEX_NONE ? Local[I] : Local[I] * Result[Parent]);
+        }
+        return Result;
+    };
+    auto CheckIdle = [&](const TArray<FTransform>& Local)
+    {
+        const auto CS = ComponentPose(Local);
+        for (int32 Side = 0; Side < 2; ++Side)
+        {
+            const FString Prefix = Side == 0 ? TEXT("左") : TEXT("右");
+            const int32 Upper = Indices.FindChecked(*(Prefix + TEXT("腕")));
+            const int32 Elbow = Indices.FindChecked(*(Prefix + TEXT("ひじ")));
+            const FVector Direction = (CS[Elbow].GetLocation() - CS[Upper].GetLocation()).GetSafeNormal();
+            const double Angle = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(FVector::DotProduct(Direction, -FVector::UpVector), -1., 1.)));
+            TestTrue(TEXT("Idle upper arms rest twenty degrees outward from the torso"), FMath::IsNearlyEqual(Angle, 20., .01));
+            TestTrue(TEXT("Idle left and right arms remain on their anatomical sides"), Direction.Y * (Side == 0 ? -1 : 1) > 0);
+        }
+        for (int32 I = 0; I < Local.Num(); ++I)
+        {
+            const bool Upper = I == Indices.FindChecked(TEXT("左腕")) || I == Indices.FindChecked(TEXT("右腕"));
+            TestTrue(TEXT("Idle pose remains finite and retains authored translations and scales"), !Local[I].ContainsNaN()
+                && Local[I].GetLocation().Equals(Rest[I].GetLocation(), .001) && Local[I].GetScale3D().Equals(Rest[I].GetScale3D(), .001));
+            if (!Upper) TestTrue(TEXT("Forearms, hands, fingers and other local poses retain their authored rest"), Local[I].Equals(Rest[I], .001));
+        }
+    };
+    Rig->UpdateTracking(1.f / 60.f);
     auto Pose = Evaluate();
+    CheckIdle(Pose);
+    TestFalse(TEXT("Display idle is not reported as a tracked arm"), Rig->IsBodyChannelTracked(TEXT("upperarm_l")));
+    const auto IdleCS = ComponentPose(Pose);
+    Mesh->SetWorldRotation(FRotator(0, -90, 0)); Rig->UpdateTracking(1.f / 60.f);
+    CheckIdle(Evaluate());
+    Mesh->SetWorldRotation(FRotator::ZeroRotator);
+#if WITH_VRM4U_PMX_BULLET
+    auto* IdleAssetList = NewObject<UVrmAssetListObject>(Mesh);
+    IdleAssetList->SkeletalMesh = Asset;
+    auto* IdlePhysics = NewObject<UVrmPmxPhysicsData>(IdleAssetList);
+    IdlePhysics->ModelScale = .1f; IdleAssetList->PmxPhysicsData = IdlePhysics;
+    auto& IdleBody = IdlePhysics->RigidBodies.AddDefaulted_GetRef();
+    const int32 Wrist = Indices.FindChecked(TEXT("左手首"));
+    const FVector WristRest = GlobalRest[Wrist].GetLocation();
+    IdleBody.BoneName = TEXT("左手首"); IdleBody.SourceBoneIndex = Wrist;
+    IdleBody.Mode = 1; IdleBody.Shape = 0; IdleBody.Size = FVector(.1, 0, 0); IdleBody.Mass = 1; IdleBody.CollisionMask = 0;
+    IdleBody.Position = FVector(WristRest.X, WristRest.Z, -WristRest.Y) / 10.;
+    Instance->DstVrmAssetList = IdleAssetList;
+    const auto PhysicalIdleCS = ComponentPose(Evaluate(0));
+    TestTrue(TEXT("Secondary physics initializes from the relaxed animated wrist, not the source bind pose"),
+        PhysicalIdleCS[Wrist].Equals(IdleCS[Wrist], .01));
+    Instance->DstVrmAssetList = nullptr;
+#endif
+    Submit(Neutral);
+    Pose = Evaluate();
     for (int32 I = 0; I < Pose.Num(); ++I)
         TestTrue(FString::Printf(TEXT("Neutral retains nonidentity bind pose %d"), I), Pose[I].Equals(Rest[I], .0001f));
     TestFalse(TEXT("Waist control is never targeted"), Instance->BodyComponentRotations.Contains(TEXT("腰")));
@@ -1876,13 +1987,18 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     FVtuberTrackingSnapshot Missing = Neutral; Missing.bFaceTracked = false;
     for (int32 I : {11, 12, 13, 14, 15, 16})
         Missing.PoseWorldLandmarks[I].Visibility = Missing.PoseWorldLandmarks[I].Presence = .44f;
+    const FQuat BeforeLoss = Rig->SmoothedBody.FindChecked(TEXT("upperarm_l"));
     Submit(Missing);
     TestFalse(TEXT("Low confidence shoulders reject torso"), Rig->IsBodyChannelTracked(TEXT("spine")));
     TestFalse(TEXT("Low confidence chain rejects arm"), Rig->IsBodyChannelTracked(TEXT("upperarm_l")));
+    const FQuat FirstReturn = Rig->SmoothedBody.FindChecked(TEXT("upperarm_l"));
+    const int32 IdleUpper = Indices.FindChecked(TEXT("左腕"));
+    const FQuat IdleDelta = Rest[IdleUpper].GetRotation().Inverse() * Rig->IdleArmLocalRotations.FindChecked(TEXT("upperarm_l"));
+    TestTrue(TEXT("Tracking loss returns toward idle continuously rather than snapping"),
+        !FirstReturn.Equals(BeforeLoss, .0001) && !FirstReturn.Equals(IdleDelta, .0001));
     for (int32 I = 0; I < 80; ++I) Rig->UpdateTracking(.1f);
     Pose = Evaluate();
-    for (int32 I = 0; I < Pose.Num(); ++I)
-        TestTrue(TEXT("Tracking loss returns locally to finite neutral pose"), !Pose[I].ContainsNaN() && Pose[I].Equals(Rest[I], .001f));
+    CheckIdle(Pose);
 
     FVtuberTrackingSnapshot Hands;
     FVtuberHandTracking Hand; Hand.Handedness = TEXT("Left"); Hand.Score = .9f; Hand.WorldLandmarks.SetNum(21);

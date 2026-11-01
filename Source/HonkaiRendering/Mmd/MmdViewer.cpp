@@ -37,6 +37,8 @@
 #include "VrmPoseableMeshComponent.h"
 #include "Vtuber/VtuberOutput.h"
 #include "Vtuber/SVtuberRigPanel.h"
+#include "Vtuber/SVtuberCaptureResults.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Framework/Application/SlateApplication.h"
@@ -139,6 +141,35 @@ namespace
             && !Name.Contains(TEXT(":")) && !Name.Contains(TEXT(".."))
             && FPaths::GetExtension(Name).Equals(TEXT("png"), ESearchCase::IgnoreCase);
     }
+
+#if WITH_DEV_AUTOMATION_TESTS
+    bool LoadTrackingPreviewFixture(FNativeTrackingPreview& Out)
+    {
+        FString ImagePath, DataPath;
+        if (!FParse::Value(FCommandLine::Get(), TEXT("VtuberPreviewImage="), ImagePath)
+            || !FParse::Value(FCommandLine::Get(), TEXT("VtuberPreviewData="), DataPath)) return false;
+        FVtuberTrackingSnapshot Snapshot;
+        if (!FNativeTracking::LoadReplayFrame(DataPath, false, Snapshot)) return false;
+        TArray<uint8> Bytes;
+        if (IFileManager::Get().FileSize(*ImagePath) > 16 * 1024 * 1024 || !FFileHelper::LoadFileToArray(Bytes, *ImagePath)) return false;
+        auto& Module = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+        auto Decoder = Module.CreateImageWrapper(Module.DetectImageFormat(Bytes.GetData(), Bytes.Num()));
+        if (!Decoder || !Decoder->SetCompressed(Bytes.GetData(), Bytes.Num())) return false;
+        const int32 W = Decoder->GetWidth(), H = Decoder->GetHeight();
+        if (W <= 0 || H <= 0 || W > 4096 || H > 4096) return false;
+        TArray64<uint8> Raw;
+        if (!Decoder->GetRaw(ERGBFormat::BGRA, 8, Raw) || Raw.Num() != int64(W) * H * 4) return false;
+        const float Scale = FMath::Min(320.f / W, 240.f / H);
+        Out.Width = FMath::Max(1, FMath::FloorToInt(W * Scale)); Out.Height = FMath::Max(1, FMath::FloorToInt(H * Scale));
+        TArray<FColor> Source, Resized;
+        Source.SetNumUninitialized(W * H); FMemory::Memcpy(Source.GetData(), Raw.GetData(), Raw.Num());
+        FImageUtils::ImageResize(W, H, Source, Out.Width, Out.Height, Resized, false);
+        Out.BGRA.SetNumUninitialized(Resized.Num() * 4); FMemory::Memcpy(Out.BGRA.GetData(), Resized.GetData(), Out.BGRA.Num());
+        Out.Sequence = 1; Out.TimestampSeconds = FPlatformTime::Seconds(); Out.Tracking = MoveTemp(Snapshot);
+        Out.Status = TEXT("离线验证样本，摄像头未启动");
+        return Out.HasImage();
+    }
+#endif
 
     TMap<int32, UTexture2D*> LoadFaceMaps(const FString& ModelPath, UVrmAssetListObject* Asset, const FString& ExplicitProfile = FString())
     {
@@ -299,6 +330,14 @@ public:
     TSharedPtr<SBorder> MenuLayer;
     TSharedPtr<SBox> PageHost;
     TSharedPtr<SVtuberRigPanel> MappingPanel;
+    TSharedPtr<SBox> ResultsHost;
+    TSharedPtr<SVtuberCaptureResults> ResultsPanel;
+    FVector2D ResultsPosition{960, 40};
+    bool bResultsOpen = false;
+#if WITH_DEV_AUTOMATION_TESTS
+    FNativeTrackingPreview PreviewFixture;
+    bool bPreviewFixture = false;
+#endif
     FCurveSequence MenuFade{0.f, 0.18f, ECurveEaseFunction::QuadInOut};
     FVector2D NavigationPosition{20, 20}, PagePosition{360, 40}, PageSize{560, 520};
     bool bMenuOpen = false, bHudVisible = false, bNavigationCollapsed = false;
@@ -356,11 +395,13 @@ public:
             [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller.IsValid()
                 ? FString::Printf(TEXT("动捕 %.1f FPS"), Controller->Tracking.InferenceFps) : FString()); })
                 .ColorAndOpacity(Muted)];
+        Navigation->AddSlot().AutoHeight().Padding(3, 3)
+            [Button(TEXT("识别结果"), [this] { OpenResults(); })];
         TWeakPtr<SMmdViewer> Weak = SharedThis(this);
         FMmdMenuSetup NavigationSetup{FString(TEXT("Honkai Render")),
             [Weak] { if (auto Self = Weak.Pin()) Self->ToggleHud(); },
             [Weak] { if (auto Self = Weak.Pin()) Self->ToggleHud(); },
-            [Weak](FVector2D Delta) { if (auto Self = Weak.Pin()) Self->MovePanel(Self->NavigationPosition, Delta, FVector2D(320, Self->bNavigationCollapsed ? 44 : 300)); },
+            [Weak](FVector2D Delta) { if (auto Self = Weak.Pin()) Self->MovePanel(Self->NavigationPosition, Delta, FVector2D(320, Self->bNavigationCollapsed ? 44 : 344)); },
             [Weak] { if (auto Self = Weak.Pin()) Self->bNavigationCollapsed = !Self->bNavigationCollapsed; },
             SNew(SBorder).Padding(12)[Navigation]};
         TSharedRef<SMmdMenu> NavigationWindow = SNew(SMmdMenu, NavigationSetup);
@@ -382,12 +423,15 @@ public:
                 .Visibility(EVisibility::Collapsed)
                 [SNew(SCanvas)
                     + SCanvas::Slot().Position_Lambda([this] { return NavigationPosition; })
-                        .Size_Lambda([this] { return FVector2D(320, bNavigationCollapsed ? 44 : 300); })[NavigationWindow]
+                        .Size_Lambda([this] { return FVector2D(320, bNavigationCollapsed ? 44 : 344); })[NavigationWindow]
                     + SCanvas::Slot().Position_Lambda([this] { return PagePosition; })
                         .Size_Lambda([this] { return PageSize; })
                         [SAssignNew(PageHost, SBox).Visibility_Lambda([this]
                             { return bHudVisible && (bMenuOpen || !MenuFade.IsAtStart()) ? EVisibility::Visible : EVisibility::Collapsed; })
-                            .IsEnabled_Lambda([this] { return bMenuOpen; })]]]
+                            .IsEnabled_Lambda([this] { return bMenuOpen; })]
+                    + SCanvas::Slot().Position_Lambda([this] { return ResultsPosition; }).Size(FVector2D(420, 610))
+                        [SAssignNew(ResultsHost, SBox).Visibility_Lambda([this]
+                            { return bResultsOpen ? EVisibility::Visible : EVisibility::Collapsed; })]]]
         ];
     }
     virtual void Tick(const FGeometry& Geometry, double Time, float Delta) override
@@ -413,6 +457,7 @@ public:
     {
         if (bHudVisible && MappingPanel) MappingPanel->FlushSave();
         bHudVisible = !bHudVisible;
+        if (Controller.IsValid()) Controller->Tracking.SetPreviewEnabled(bHudVisible && bResultsOpen);
         PlacementKeys.Reset();
         if (FSlateApplication::IsInitialized()) FSlateApplication::Get().SetKeyboardFocus(SharedThis(this));
     }
@@ -427,10 +472,42 @@ public:
         if (!bHudVisible) return false;
         const FVector2D Point = Geometry.AbsoluteToLocal(Event.GetScreenSpacePosition());
         const FSlateRect Navigation(NavigationPosition.X, NavigationPosition.Y,
-            NavigationPosition.X + 320, NavigationPosition.Y + (bNavigationCollapsed ? 44 : 300));
+            NavigationPosition.X + 320, NavigationPosition.Y + (bNavigationCollapsed ? 44 : 344));
         const FSlateRect Page(PagePosition.X, PagePosition.Y,
             PagePosition.X + PageSize.X, PagePosition.Y + PageSize.Y);
-        return Navigation.ContainsPoint(Point) || ((bMenuOpen || !MenuFade.IsAtStart()) && Page.ContainsPoint(Point));
+        const FSlateRect Results(ResultsPosition.X, ResultsPosition.Y, ResultsPosition.X + 420, ResultsPosition.Y + 610);
+        return Navigation.ContainsPoint(Point) || ((bMenuOpen || !MenuFade.IsAtStart()) && Page.ContainsPoint(Point))
+            || (bResultsOpen && Results.ContainsPoint(Point));
+    }
+    void CloseResults()
+    {
+        bResultsOpen = false;
+        if (Controller.IsValid()) Controller->Tracking.SetPreviewEnabled(false);
+        if (ResultsHost) ResultsHost->SetContent(SNullWidget::NullWidget);
+        ResultsPanel.Reset();
+    }
+    void OpenResults()
+    {
+        bResultsOpen = bHudVisible = true;
+        if (Controller.IsValid()) Controller->Tracking.SetPreviewEnabled(true);
+#if WITH_DEV_AUTOMATION_TESTS
+        bPreviewFixture = LoadTrackingPreviewFixture(PreviewFixture);
+#endif
+        ResultsPosition = FVector2D(FMath::Max(20.f, GetCachedGeometry().GetLocalSize().X - 440.f), 40);
+        TWeakPtr<SMmdViewer> Weak = SharedThis(this);
+        auto Content = SAssignNew(ResultsPanel, SVtuberCaptureResults).GetPreview_Lambda([this]
+        {
+#if WITH_DEV_AUTOMATION_TESTS
+            if (bPreviewFixture) { PreviewFixture.TimestampSeconds = FPlatformTime::Seconds(); return PreviewFixture; }
+#endif
+            return Controller.IsValid() ? Controller->Tracking.GetPreview() : FNativeTrackingPreview();
+        });
+        FMmdMenuSetup Setup{TEXT("识别结果"),
+            [Weak] { if (auto Self = Weak.Pin()) Self->CloseResults(); },
+            [Weak] { if (auto Self = Weak.Pin()) Self->ToggleHud(); },
+            [Weak](FVector2D Delta) { if (auto Self = Weak.Pin()) Self->MovePanel(Self->ResultsPosition, Delta, FVector2D(420, 610)); },
+            {}, Content};
+        ResultsHost->SetContent(SNew(SMmdMenu, Setup));
     }
     void CloseWindow()
     {
@@ -450,6 +527,7 @@ public:
     }
     void OpenPage(FName Page = "Main")
     {
+        if (Page == "Results") { OpenResults(); return; }
         if (Page == "Main") { CloseWindow(); bHudVisible = true; return; }
         if (MappingPanel) MappingPanel->FlushSave();
         MappingPanel.Reset();
@@ -501,6 +579,7 @@ public:
                         + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[Value]];
             };
             Section(TEXT("状态"), 0);
+            Add(Button(TEXT("打开识别结果"), [this] { OpenResults(); }));
             Add(SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller->Tracking.Status); })
                 .Font(FCoreStyle::GetDefaultFontStyle("Regular", 13)).AutoWrapText(true).ColorAndOpacity(Text));
             Add(SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller->TrackingSummary()); })
@@ -1014,6 +1093,13 @@ bool FMmdOverlayTest::RunTest(const FString& Parameters)
     auto Menu = SNew(SMmdViewer, nullptr);
     TestFalse(TEXT("Navigation does not block camera"), Menu->IsMenuBlocking());
     TestTrue(TEXT("Viewer starts with UI hidden"), Menu->MenuLayer->GetVisibility() == EVisibility::Collapsed);
+    Menu->OpenResults();
+    TestTrue(TEXT("Results open independently of mapping pages"), Menu->bResultsOpen && Menu->ResultsPanel.IsValid());
+    Menu->OpenPage("Application");
+    TestTrue(TEXT("Opening a settings page retains recognition results"), Menu->bResultsOpen);
+    Menu->CloseResults();
+    TestFalse(TEXT("Closing recognition results releases its preview widget"), Menu->bResultsOpen || Menu->ResultsPanel.IsValid());
+    Menu->bHudVisible = false;
     Menu->ToggleHud();
     Menu->Tick(FGeometry(), 0, 0);
     TestTrue(TEXT("H restores floating navigation"), Menu->MenuLayer->GetVisibility().IsVisible());
@@ -1422,7 +1508,8 @@ void AMmdViewerController::OnModelLoaded()
         {
             const FName Page = CapturePage.Equals(TEXT("Mapping"), ESearchCase::IgnoreCase) ? FName(TEXT("Mapping"))
                 : CapturePage.Equals(TEXT("Capture"), ESearchCase::IgnoreCase) ? FName(TEXT("Tracking"))
-                : CapturePage.Equals(TEXT("Nav"), ESearchCase::IgnoreCase) ? FName(TEXT("Main")) : NAME_None;
+                : CapturePage.Equals(TEXT("Nav"), ESearchCase::IgnoreCase) ? FName(TEXT("Main"))
+                : CapturePage.Equals(TEXT("Results"), ESearchCase::IgnoreCase) ? FName(TEXT("Results")) : NAME_None;
             if (!Page.IsNone())
             {
                 TWeakObjectPtr<AMmdViewerController> Weak(this);

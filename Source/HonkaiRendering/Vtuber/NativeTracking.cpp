@@ -93,6 +93,34 @@ namespace
         if (bMirror) MirrorTrackingFrame(Out);
     }
 
+    FNativeTrackingPreview ConvertCapturePreview(const FHonkaiCaptureFrame& Source, bool bMirror, const FVtuberTrackingSnapshot& Tracking)
+    {
+        FNativeTrackingPreview Out;
+        Out.Status = Source.Status;
+        if (Source.State != EHonkaiCaptureState::Running || Source.PreviewWidth < 1 || Source.PreviewWidth > 320
+            || Source.PreviewHeight < 1 || Source.PreviewHeight > 240
+            || Source.PreviewBGRA.Num() != Source.PreviewWidth * Source.PreviewHeight * 4) return Out;
+        Out.Sequence = Source.Sequence; Out.TimestampSeconds = Source.TimestampSeconds;
+        Out.Width = Source.PreviewWidth; Out.Height = Source.PreviewHeight;
+        Out.BGRA = Source.PreviewBGRA; Out.Tracking = Tracking;
+        if (bMirror)
+            for (int32 Y = 0; Y < Out.Height; ++Y)
+                for (int32 X = 0; X < Out.Width / 2; ++X)
+                    for (int32 C = 0; C < 4; ++C)
+                        Swap(Out.BGRA[(Y * Out.Width + X) * 4 + C], Out.BGRA[(Y * Out.Width + Out.Width - 1 - X) * 4 + C]);
+        if (Source.FaceLandmarks.Num() <= 512)
+            for (const auto& Point : Source.FaceLandmarks)
+            {
+                if (Point.Position.ContainsNaN() || !FMath::IsFinite(Point.Visibility) || !FMath::IsFinite(Point.Presence))
+                { Out.FaceLandmarks.Reset(); break; }
+                auto& Target = Out.FaceLandmarks.AddDefaulted_GetRef();
+                Target.Position = FVector(Point.Position);
+                if (bMirror) Target.Position.X = 1. - Target.Position.X;
+                Target.Visibility = Point.Visibility; Target.Presence = Point.Presence;
+            }
+        return Out;
+    }
+
     FString SettingsFile() { return FPaths::ProjectSavedDir() / TEXT("Config/Windows/Vtuber.ini"); }
     bool ReadSnapshot(const FString& Path, FString& Text)
     {
@@ -128,6 +156,29 @@ FNativeTracking::~FNativeTracking()
 }
 bool FNativeTracking::IsRunning() { return InProcessCapture ? InProcessCapture->IsRunning() : Process.IsValid() && FPlatformProcess::IsProcRunning(Process); }
 bool FNativeTracking::IsStopping() const { return InProcessCapture ? InProcessCapture->IsStopping() : StopRequestedAt > 0; }
+void FNativeTracking::SetPreviewEnabled(bool bEnabled)
+{
+    check(IsInGameThread());
+    bPreviewEnabled = bEnabled;
+    if (InProcessCapture) InProcessCapture->SetPreviewEnabled(bEnabled);
+    Preview = FNativeTrackingPreview();
+    Preview.bSupported = !Process.IsValid();
+    Preview.Status = !bEnabled ? TEXT("识别预览已隐藏") : IsRunning() ? TEXT("正在等待摄像头画面…") : TEXT("摄像头未启动");
+}
+FNativeTrackingPreview FNativeTracking::GetPreview() const
+{
+    check(IsInGameThread());
+    FNativeTrackingPreview Result = Preview;
+    if (!bPreviewEnabled || !Result.bSupported || (Result.HasImage()
+        && (!FMath::IsFinite(Result.TimestampSeconds) || FPlatformTime::Seconds() - Result.TimestampSeconds > .5
+            || Result.TimestampSeconds > FPlatformTime::Seconds() + 1.)))
+    {
+        const bool bSupported = Result.bSupported;
+        Result = FNativeTrackingPreview(); Result.bSupported = bSupported;
+        Result.Status = !bPreviewEnabled ? TEXT("识别预览已隐藏") : !bSupported ? TEXT("当前独立后端不支持摄像头画面预览") : TEXT("画面已过期，等待下一帧");
+    }
+    return Result;
+}
 bool FNativeTracking::Start()
 {
     if (IsStopping()) { Status = TEXT("上一次动捕仍在释放摄像头，请稍候"); return false; }
@@ -137,7 +188,9 @@ bool FNativeTracking::Start()
     bStopKillRequested = false;
     LastTimestamp = LastPoll = 0; InferenceMs = InferenceFps = 0;
     OutputPath.Empty(); StopPath.Empty();
+    Preview = FNativeTrackingPreview(); Preview.Status = TEXT("正在等待摄像头画面…");
     if (!InProcessCapture) InProcessCapture = MakeUnique<FHonkaiMotionCapture>();
+    InProcessCapture->SetPreviewEnabled(bPreviewEnabled);
     FHonkaiCaptureSettings Settings;
     Settings.CameraIndex = FMath::Clamp(CameraIndex, 0, 32);
     Settings.Width = FMath::Clamp(Width, 320, 1920); Settings.Height = FMath::Clamp(Height, 240, 1080);
@@ -160,6 +213,7 @@ bool FNativeTracking::Start()
         if (!FPaths::FileExists(Bin / File))
         {
             Status = TEXT("进程内动捕不可用：") + IntegratedError.Left(160) + TEXT("；独立后端依赖缺失，请运行 Scripts/Prepare-NativeTracking.ps1");
+            Preview.Status = Status;
             UE_LOG(LogTemp, Error, TEXT("VTUBER_CAPTURE no backend started; helper dependency missing: %s"), File);
             return false;
         }
@@ -170,6 +224,7 @@ bool FNativeTracking::Start()
         Settings.CameraIndex, Settings.Width, Settings.Height, Settings.FramesPerSecond,
         Settings.Confidence, *OutputPath, *StopPath, FPlatformProcess::GetCurrentProcessId());
     Process = FPlatformProcess::CreateProc(*Exe, *Args, false, true, true, nullptr, 0, *FPaths::GetPath(Exe), nullptr);
+    Preview.bSupported = false; Preview.Status = TEXT("当前独立后端不支持摄像头画面预览");
     LastTimestamp = 0; InferenceMs = InferenceFps = 0;
     Status = Process.IsValid() ? TEXT("独立进程动捕 · 正在打开摄像头…") : TEXT("独立进程动捕启动失败");
     UE_LOG(LogTemp, Display, TEXT("VTUBER_CAPTURE backend=helper startup=%s"), Process.IsValid() ? TEXT("launched") : TEXT("failed"));
@@ -177,6 +232,8 @@ bool FNativeTracking::Start()
 }
 void FNativeTracking::Stop()
 {
+    const bool bSupported = Preview.bSupported;
+    Preview = FNativeTrackingPreview(); Preview.bSupported = bSupported; Preview.Status = TEXT("摄像头已停止");
     if (InProcessCapture)
     {
         InProcessCapture->Stop();
@@ -207,6 +264,7 @@ bool FNativeTracking::Poll(FVtuberTrackingSnapshot& Out)
         InferenceMs = FMath::IsFinite(Frame.InferenceMilliseconds) ? FMath::Clamp(Frame.InferenceMilliseconds, 0.f, 10000.f) : 0;
         InferenceFps = FMath::IsFinite(Frame.ProcessingFPS) ? FMath::Clamp(Frame.ProcessingFPS, 0.f, 240.f) : 0;
         ConvertCaptureFrame(Frame, bMirror, Out);
+        if (bPreviewEnabled) Preview = ConvertCapturePreview(Frame, bMirror, Out);
         return true;
     }
     if (StopRequestedAt > 0)
@@ -314,6 +372,11 @@ bool FNativeTracking::Poll(FVtuberTrackingSnapshot& Out)
     }
     Status = TEXT("独立进程动捕 · ") + Status;
     if (bMirror) MirrorTrackingFrame(Out);
+    if (bPreviewEnabled)
+    {
+        Preview = FNativeTrackingPreview(); Preview.bSupported = false;
+        Preview.Status = TEXT("当前独立后端不支持摄像头画面预览"); Preview.Tracking = Out;
+    }
     return true;
 }
 #if WITH_DEV_AUTOMATION_TESTS
@@ -389,6 +452,63 @@ bool FVtuberInProcessFrameTest::RunTest(const FString& Parameters)
         Source.State = State; ConvertCaptureFrame(Source, true, Frame);
         TestTrue(TEXT("Final and stopping states clear previous tracking instead of replaying it"), !Frame.bFaceTracked && !Frame.bPoseTracked
             && Frame.BlendShapes.IsEmpty() && Frame.PoseLandmarks.IsEmpty() && Frame.PoseWorldLandmarks.IsEmpty() && Frame.Hands.IsEmpty());
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberPreviewFrameTest, "HonkaiVTuber.Tracking.PreviewFrame",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FVtuberPreviewFrameTest::RunTest(const FString& Parameters)
+{
+    FHonkaiCaptureFrame Source;
+    Source.Sequence = 42; Source.TimestampSeconds = FPlatformTime::Seconds(); Source.State = EHonkaiCaptureState::Running;
+    Source.PreviewWidth = Source.PreviewHeight = 2;
+    Source.PreviewBGRA = {0,0,255,255, 0,255,0,255, 255,0,0,255, 0,255,255,255};
+    Source.bFaceTracked = Source.bPoseTracked = true;
+    Source.FaceLandmarks.SetNum(1); Source.FaceLandmarks[0].Position = FVector3f(.7f, .4f, 0);
+    Source.PoseLandmarks.SetNum(33); Source.PoseWorldLandmarks.SetNum(33);
+    Source.PoseLandmarks[11].Position.X = .7f; Source.PoseLandmarks[12].Position.X = .4f;
+    auto& Hand = Source.Hands.AddDefaulted_GetRef(); Hand.Handedness = TEXT("Left"); Hand.Score = 1;
+    Hand.Landmarks.SetNum(21); Hand.Landmarks[0].Position.X = .7f;
+    Source.BlendShapes.Add(TEXT("eyeBlinkLeft"), .2f);
+    FVtuberTrackingSnapshot PlainTracking, MirrorTracking;
+    ConvertCaptureFrame(Source, false, PlainTracking); ConvertCaptureFrame(Source, true, MirrorTracking);
+    const auto Plain = ConvertCapturePreview(Source, false, PlainTracking);
+    const auto Mirrored = ConvertCapturePreview(Source, true, MirrorTracking);
+    TestTrue(TEXT("Preview image and recognition retain one capture timestamp and sequence"), Plain.HasImage()
+        && Plain.Sequence == 42 && Plain.TimestampSeconds == Plain.Tracking.TimestampSeconds && Plain.BGRA == Source.PreviewBGRA);
+    const TArray<uint8> Expected{0,255,0,255, 0,0,255,255, 0,255,255,255, 255,0,0,255};
+    TestTrue(TEXT("Preview mirrors whole BGRA pixels within each row exactly once"), Mirrored.BGRA == Expected);
+    TestTrue(TEXT("Face, pose and hand points overlay the same mirrored image"),
+        FMath::IsNearlyEqual(Mirrored.FaceLandmarks[0].Position.X, .3, 1.e-6)
+        && FMath::IsNearlyEqual(Mirrored.Tracking.PoseLandmarks[11].Position.X, .6, 1.e-6)
+        && Mirrored.Tracking.Hands[0].Handedness == TEXT("Right")
+        && FMath::IsNearlyEqual(Mirrored.Tracking.Hands[0].Landmarks[0].Position.X, .3, 1.e-6)
+        && Mirrored.Tracking.BlendShapes.FindRef(TEXT("eyeBlinkRight")) == .2f);
+    TestTrue(TEXT("Preview mirroring leaves core tracking and source pixels untouched"), Source.PreviewBGRA == Plain.BGRA
+        && PlainTracking.Hands[0].Handedness == TEXT("Left") && PlainTracking.PoseLandmarks[11].Position.X > .69);
+    FNativeTracking Capture;
+    Capture.SetPreviewEnabled(true); Capture.Preview = Mirrored;
+    TestTrue(TEXT("The game-thread getter exposes a fresh in-memory image"), Capture.GetPreview().HasImage());
+    Capture.Preview.TimestampSeconds = FPlatformTime::Seconds() - 1.;
+    const auto Stale = Capture.GetPreview();
+    TestTrue(TEXT("A stalled capture cannot replay an old image or overlay"), !Stale.HasImage() && Stale.FaceLandmarks.IsEmpty()
+        && Stale.Tracking.Hands.IsEmpty() && Stale.Status.Contains(TEXT("过期")));
+    Capture.Preview = Mirrored; Capture.Stop();
+    TestFalse(TEXT("Stop immediately clears the cached preview"), Capture.GetPreview().HasImage());
+    Capture.Preview = Mirrored; Capture.SetPreviewEnabled(false);
+    TestTrue(TEXT("Hiding preview clears pixels without starting any capture backend"), !Capture.GetPreview().HasImage() && !Capture.InProcessCapture);
+    Capture.SetPreviewEnabled(true); Capture.Preview = Mirrored; Capture.Preview.bSupported = false;
+    TestTrue(TEXT("Legacy helper reports preview as unsupported without a fabricated image"), !Capture.GetPreview().HasImage()
+        && !Capture.GetPreview().bSupported && Capture.GetPreview().Status.Contains(TEXT("不支持")));
+    Source.PreviewBGRA.Pop();
+    TestFalse(TEXT("A short image buffer is rejected"), ConvertCapturePreview(Source, false, PlainTracking).HasImage());
+    Source.PreviewWidth = 321;
+    TestFalse(TEXT("Oversized image metadata is rejected before allocation"), ConvertCapturePreview(Source, false, PlainTracking).HasImage());
+    for (const EHonkaiCaptureState State : {EHonkaiCaptureState::Stopped, EHonkaiCaptureState::Stopping, EHonkaiCaptureState::Error})
+    {
+        Source.State = State;
+        TestFalse(TEXT("State-only final frames cannot expose old pixels"), ConvertCapturePreview(Source, true, MirrorTracking).HasImage());
     }
     return true;
 }
