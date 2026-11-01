@@ -30,6 +30,12 @@ __pycache__/
 !/Content/MmdViewer/
 *.pmx
 *.pmd
+*.vrm
+*.vrma
+*.fbx
+*.glb
+*.gltf
+*.blend
 *.vmd
 *.zip
 *.7z
