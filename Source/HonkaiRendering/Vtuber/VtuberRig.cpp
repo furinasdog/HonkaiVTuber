@@ -20,6 +20,9 @@
 #include "Math/RotationMatrix.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#if PLATFORM_WINDOWS
+#include "Windows/WindowsHWrapper.h"
+#endif
 
 namespace
 {
@@ -35,8 +38,8 @@ namespace
         {TEXT("cheekPuff"), TEXT("頬膨らみ|ぷくー|鼓腮")},
         {TEXT("cheekSquintLeft"), TEXT("頬上げ左|cheekSquintL")},
         {TEXT("cheekSquintRight"), TEXT("頬上げ右|cheekSquintR")},
-        {TEXT("eyeBlinkLeft"), TEXT("ウィンク|ウィンク２|まばたき左|まばたき|左眨眼|眨眼|blinkL|blink")},
-        {TEXT("eyeBlinkRight"), TEXT("ウィンク右|ウィンク２右|まばたき右|まばたき|右眨眼|眨眼|blinkR|blink")},
+        {TEXT("eyeBlinkLeft"), TEXT("まばたき左|左眨眼|blinkL|ウィンク２|ウィンク|まばたき|眨眼|blink")},
+        {TEXT("eyeBlinkRight"), TEXT("まばたき右|右眨眼|blinkR|ウィンク２右|ウィンク右|まばたき|眨眼|blink")},
         {TEXT("eyeLookDownLeft"), TEXT("目下左|eyeLookDownL")},
         {TEXT("eyeLookDownRight"), TEXT("目下右|eyeLookDownR")},
         {TEXT("eyeLookInLeft"), TEXT("目内左|eyeLookInL")},
@@ -202,6 +205,20 @@ namespace
         return false;
     }
 
+    bool IsSteadyBodyChannel(FName Name)
+    {
+        return Name == TEXT("spine") || Name == TEXT("chest")
+            || Name == TEXT("shoulder_l") || Name == TEXT("shoulder_r")
+            || Name == TEXT("upperarm_l") || Name == TEXT("upperarm_r")
+            || Name == TEXT("lowerarm_l") || Name == TEXT("lowerarm_r");
+    }
+
+    bool IsSteadyArmChannel(FName Name)
+    {
+        return Name == TEXT("upperarm_l") || Name == TEXT("upperarm_r")
+            || Name == TEXT("lowerarm_l") || Name == TEXT("lowerarm_r");
+    }
+
     bool IsKnownChannel(FName Name)
     {
         if (IsBodyChannel(Name) || UVtuberRigComponent::GetTrackingChannels().Contains(Name)) return true;
@@ -266,6 +283,22 @@ namespace
 
     FString NormalizeName(FString Name)
     {
+#if PLATFORM_WINDOWS
+        // PMX names commonly mix halfwidth kana and fullwidth digits.
+        if (!Name.IsEmpty())
+        {
+            const int32 Size = LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_FULLWIDTH, *Name, Name.Len(), nullptr, 0, nullptr, nullptr, 0);
+            TArray<TCHAR> Buffer;
+            Buffer.SetNumUninitialized(FMath::Max(Size, 0));
+            if (Size > 0 && LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_FULLWIDTH, *Name, Name.Len(), Buffer.GetData(), Size, nullptr, nullptr, 0) == Size)
+                Name = FString(Size, Buffer.GetData());
+        }
+#endif
+        for (TCHAR& Character : Name)
+        {
+            if (Character >= 0xff01 && Character <= 0xff5e) Character -= 0xfee0;
+            else if (Character == 0x3000) Character = TEXT(' ');
+        }
         Name.ToLowerInline();
         for (const TCHAR* Separator : {TEXT(" "), TEXT("_"), TEXT("-"), TEXT(".")})
             Name.ReplaceInline(Separator, TEXT(""));
@@ -280,6 +313,52 @@ namespace
             for (FName Name : Available)
                 if (NormalizeName(Name.ToString()) == NormalizeName(Candidate)) return Name;
         return NAME_None;
+    }
+
+    void BuildMorphWeights(const TArray<FVtuberMorphMapping>& Mappings, const TArray<FName>& Available,
+        const TMap<FName, float>& Outputs, TMap<FName, float>& MorphWeights)
+    {
+        const FName EyeChannels[] = {TEXT("eyeBlinkLeft"), TEXT("eyeBlinkRight"), TEXT("eyeSquintLeft"), TEXT("eyeSquintRight"), TEXT("eyeWideLeft"), TEXT("eyeWideRight")};
+        FName Targets[6];
+        float Requested[6] = {};
+        for (const auto& M : Mappings)
+            if (!M.Morph.IsNone() && Available.Contains(M.Morph))
+            {
+                int32 EyeIndex = INDEX_NONE;
+                for (int32 Index = 0; Index < 6; ++Index) if (M.Channel == EyeChannels[Index]) EyeIndex = Index;
+                if (EyeIndex != INDEX_NONE)
+                {
+                    Targets[EyeIndex] = M.Morph;
+                    const float Value = Outputs.FindRef(M.Channel);
+                    Requested[EyeIndex] = FMath::IsFinite(Value) ? FMath::Clamp(Value, 0.f, 1.f) : 0.f;
+                    continue;
+                }
+                float& Weight = MorphWeights.FindOrAdd(M.Morph);
+                Weight = FMath::Max(Weight, Outputs.FindRef(M.Channel));
+            }
+        // A shared target consumes both eyes' remaining budget. Blink has priority;
+        // squint and wide fill the remainder, keeping a convex blend of eye shapes.
+        float Used[2] = {};
+        TMap<FName, float> EyeWeights;
+        for (int32 Index = 0; Index < 6; ++Index)
+        {
+            if (Targets[Index].IsNone()) continue;
+            bool Affects[2] = {};
+            for (int32 Other = 0; Other < 6; ++Other)
+                if (Targets[Other] == Targets[Index]) Affects[Other % 2] = true;
+            float Remaining = 1.f;
+            for (int32 Side = 0; Side < 2; ++Side)
+                if (Affects[Side]) Remaining = FMath::Min(Remaining, FMath::Max(0.f, 1.f - Used[Side]));
+            float& Weight = EyeWeights.FindOrAdd(Targets[Index]);
+            const float Added = FMath::Clamp(Requested[Index] - Weight, 0.f, Remaining);
+            Weight += Added;
+            for (int32 Side = 0; Side < 2; ++Side) if (Affects[Side]) Used[Side] += Added;
+        }
+        for (const auto& Eye : EyeWeights)
+        {
+            float& Weight = MorphWeights.FindOrAdd(Eye.Key);
+            Weight = FMath::Max(Weight, Eye.Value);
+        }
     }
 
     bool ValidSettings(const FVtuberRigSettings& S)
@@ -584,7 +663,7 @@ bool UVtuberRigComponent::Initialize(USkeletalMeshComponent* InMesh, const FStri
     Latest = FVtuberTrackingSnapshot();
     Settings = FVtuberRigSettings();
     ResetNeutral();
-    SmoothedExpressions.Reset(); ChannelOutputs.Reset(); ChannelInputs.Reset(); ResponseFiltered.Reset(); AppliedMorphs.Reset(); SmoothedBody.Reset();
+    SmoothedExpressions.Reset(); ChannelOutputs.Reset(); ChannelInputs.Reset(); ResponseFiltered.Reset(); AppliedMorphs.Reset(); SmoothedBody.Reset(); SteadyBodyTargets.Reset();
     TrackedBodyChannels.Reset();
     SmoothedHead = FQuat::Identity;
     BuildDefaultMappings();
@@ -735,6 +814,7 @@ bool UVtuberRigComponent::CalibrateNeutral()
     if (!bFace && !bBody) return false;
     if (bFace) { NeutralHead = Latest.HeadRotation; NeutralExpressions = Latest.BlendShapes; }
     if (bBody) NeutralBodyFrame = Body;
+    SteadyBodyTargets.Reset();
     // Do not zero the smoothed output: an existing pose returns continuously to the new neutral.
     return true;
 }
@@ -744,11 +824,13 @@ void UVtuberRigComponent::ResetNeutral()
     NeutralHead = FQuat::Identity;
     NeutralBodyFrame = FQuat::Identity;
     NeutralExpressions.Reset();
+    SteadyBodyTargets.Reset();
 }
 
 bool UVtuberRigComponent::SetSettings(const FVtuberRigSettings& Value)
 {
     if (!ValidSettings(Value)) return false;
+    if (Value.bBodyEnabled != Settings.bBodyEnabled) SteadyBodyTargets.Reset();
     if (Value.SmoothingSeconds != Settings.SmoothingSeconds)
         for (auto& Response : ChannelResponses) Response.Value.SmoothingSeconds = FMath::Clamp(Value.SmoothingSeconds, 0.f, .5f);
     Settings = Value;
@@ -779,6 +861,7 @@ bool UVtuberRigComponent::SetChannelResponse(FName Channel, const FVtuberChannel
     ChannelResponses.Add(Channel, Response);
     for (auto& Mapping : Mappings) if (Mapping.Channel == Channel) Mapping.bEnabled = Response.bEnabled;
     ResponseFiltered.Remove(Channel);
+    SteadyBodyTargets.Remove(Channel);
     return true;
 }
 
@@ -800,6 +883,7 @@ void UVtuberRigComponent::ResetChannelResponse(FName Channel)
     ChannelResponses.Remove(Channel);
     ChannelResponses.Add(Channel, GetChannelResponse(Channel));
     ResponseFiltered.Remove(Channel);
+    SteadyBodyTargets.Remove(Channel);
 }
 
 void UVtuberRigComponent::ResetAllChannelResponses()
@@ -895,6 +979,7 @@ bool UVtuberRigComponent::SetBodyBone(FName Channel, FName Bone)
     if (!bKnown || (!Bone.IsNone() && !GetAvailableBones().Contains(Bone))) return false;
     if (Bone.IsNone()) BodyBones.Remove(Channel);
     else BodyBones.Add(Channel, Bone);
+    SteadyBodyTargets.Reset();
     BuildIdleArmPose();
     return true;
 }
@@ -1151,6 +1236,9 @@ void UVtuberRigComponent::UpdateTracking(float DeltaTime)
             if (Channel)
             {
                 const bool Tracked = TrackedBodyChannels.Contains(*Channel);
+                const auto Response = GetChannelResponse(*Channel);
+                const bool bSteady = IsSteadyBodyChannel(*Channel);
+                bool bDriven = Tracked;
                 const FQuat DesiredLocal = Raw ? (ParentCS.Inverse() * *Raw).GetNormalized() : BindLocal;
                 FVector Axis;
                 float Angle;
@@ -1158,11 +1246,40 @@ void UVtuberRigComponent::UpdateTracking(float DeltaTime)
                 const float Mapped = MapResponse(*Channel, Angle / PI, DeltaTime, Tracked, true, false);
                 const float Limit = FMath::DegreesToRadians(LocalLimit(*Channel));
                 FQuat TargetDelta(Axis, FMath::Clamp(Mapped * PI, -Limit, Limit));
-                if (!Tracked || !GetChannelResponse(*Channel).bEnabled)
+                if (bSteady && Settings.bBodyEnabled && Response.bEnabled && (Tracked || SteadyBodyTargets.Contains(*Channel)))
+                {
+                    auto& State = SteadyBodyTargets.FindOrAdd(*Channel);
+                    int Decision = 0;
+                    if (Tracked)
+                    {
+                        // Compare mapped component targets: a tuned response or
+                        // safety limit must not leave the gate permanently open.
+                        const FQuat Candidate = (ParentCS * BindLocal * TargetDelta).GetNormalized();
+                        const float Gap = State.Gate.bHasTarget
+                            ? FMath::RadiansToDegrees(Candidate.AngularDistance(State.Output)) : 0.f;
+                        const bool bArm = IsSteadyArmChannel(*Channel);
+                        Decision = State.Gate.Advance(true, DeltaTime, Gap, bArm ? 1.f : .75f, bArm ? 2.f : 1.5f);
+                        if (Decision == 2) State.Accepted = Candidate;
+                    }
+                    else Decision = State.Gate.Advance(false, DeltaTime, 0.f, 0.f, 0.f);
+                    if (Decision)
+                    {
+                        bDriven = true;
+                        TargetDelta = (BindLocal.Inverse() * ParentCS.Inverse() * State.Accepted).GetNormalized();
+                        ShortAxisAngle(TargetDelta, Axis, Angle);
+                        TargetDelta = FQuat(Axis, FMath::Min(Angle, Limit));
+                    }
+                    else SteadyBodyTargets.Remove(*Channel);
+                }
+                else if (bSteady) SteadyBodyTargets.Remove(*Channel);
+                // Brief landmark dropouts hold the accepted target while
+                // IsBodyChannelTracked still reports the lost measurement.
+                if (!bDriven || !Response.bEnabled)
                     if (const FQuat* Idle = IdleArmLocalRotations.Find(*Channel))
                         TargetDelta = (BindLocal.Inverse() * *Idle).GetNormalized();
                 FQuat& Smooth = SmoothedBody.FindOrAdd(*Channel, FQuat::Identity);
-                const float Seconds = Tracked && GetChannelResponse(*Channel).bEnabled ? GetChannelResponse(*Channel).SmoothingSeconds : Settings.ReturnSeconds;
+                const float Seconds = bDriven && Response.bEnabled
+                    ? (bSteady ? FMath::Max(.08f, Response.SmoothingSeconds) : Response.SmoothingSeconds) : Settings.ReturnSeconds;
                 const float Alpha = Seconds <= SMALL_NUMBER ? 1.f : 1.f - FMath::Exp(-FMath::Min(DeltaTime, .25f) / Seconds);
                 Smooth = FQuat::Slerp(Smooth, TargetDelta, Alpha).GetNormalized();
                 Local = (BindLocal * Smooth).GetNormalized();
@@ -1182,6 +1299,8 @@ void UVtuberRigComponent::UpdateTracking(float DeltaTime)
             }
             if (Local.ContainsNaN() || Local.SizeSquared() < .5) Local = BindLocal;
             Resolved[Index] = (ParentCS * Local).GetNormalized();
+            if (Channel)
+                if (auto* State = SteadyBodyTargets.Find(*Channel)) State->Output = Resolved[Index];
             if (Channel || Index == HeadIndex) Instance->BodyComponentRotations.Add(Ref.GetBoneName(Index), Resolved[Index]);
         }
     }
@@ -1193,12 +1312,8 @@ void UVtuberRigComponent::UpdateTracking(float DeltaTime)
         const float Input = GetChannelInput(M.Channel);
         const float Output = MapResponse(M.Channel, Input, DeltaTime, Active, false);
         SmoothedExpressions.Add(M.Channel, Output);
-        if (!M.Morph.IsNone() && Available.Contains(M.Morph))
-        {
-            float& Weight = MorphWeights.FindOrAdd(M.Morph);
-            Weight = FMath::Max(Weight, Output);
-        }
     }
+    BuildMorphWeights(Mappings, Available, SmoothedExpressions, MorphWeights);
     for (FName Name : AppliedMorphs) if (!MorphWeights.Contains(Name)) Mesh->SetMorphTarget(Name, 0);
     AppliedMorphs.Reset();
     for (const auto& Entry : MorphWeights)
@@ -1277,8 +1392,20 @@ bool UVtuberRigComponent::SaveProfile(const FString& Path, FString& Error) const
     if (!FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Text))) { Error = TEXT("映射配置序列化失败。"); return false; }
     IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
     const FString Temp = Path + TEXT(".tmp");
-    if (!FFileHelper::SaveStringToFile(Text, *Temp, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)
-        || !IFileManager::Get().Move(*Path, *Temp, true, true)) { Error = TEXT("映射配置保存失败。"); return false; }
+    if (!FFileHelper::SaveStringToFile(Text, *Temp, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+    { Error = TEXT("映射配置保存失败。"); return false; }
+#if PLATFORM_WINDOWS
+    // Replace in one same-directory rename; IFileManager::Move deletes the old profile before moving.
+    const bool bSaved = ::MoveFileExW(*FPaths::ConvertRelativePathToFull(Temp), *FPaths::ConvertRelativePathToFull(Path),
+        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    const bool bSaved = IFileManager::Get().Move(*Path, *Temp, true, true);
+#endif
+    if (!bSaved)
+    {
+        IFileManager::Get().Delete(*Temp, false, true, true);
+        Error = TEXT("映射配置保存失败。"); return false;
+    }
     return true;
 }
 
@@ -1434,7 +1561,7 @@ bool UVtuberRigComponent::LoadProfile(const FString& Path, FString& Error)
     Settings = NewSettings; Mappings = MoveTemp(NewMappings); BodyBones = MoveTemp(NewBodyBones); HeadBone = *Bone;
     NeutralHead = NewNeutral; NeutralExpressions = MoveTemp(NewExpressions);
     NeutralBodyFrame = NewBodyNeutral; ChannelResponses = MoveTemp(NewResponses);
-    ResponseFiltered.Reset();
+    ResponseFiltered.Reset(); SteadyBodyTargets.Reset();
     ProfilePath = Path;
     RefreshHeadReference();
     BuildIdleArmPose();
@@ -1797,6 +1924,110 @@ bool FVtuberRuntimeRigTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberEyeMorphBudgetTest, "HonkaiVTuber.Rig.EyeMorphBudget", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FVtuberEyeMorphBudgetTest::RunTest(const FString& Parameters)
+{
+    auto* Skeleton = NewObject<USkeleton>();
+    {
+        FReferenceSkeletonModifier Modifier(Skeleton);
+        Modifier.Add(FMeshBoneInfo(TEXT("root"), TEXT("root"), INDEX_NONE), FTransform::Identity);
+        Modifier.Add(FMeshBoneInfo(TEXT("head"), TEXT("head"), 0), FTransform(FVector(0, 0, 40)));
+    }
+    auto* Asset = NewObject<USkeletalMesh>();
+    Asset->SetSkeleton(Skeleton); Asset->SetRefSkeleton(Skeleton->GetReferenceSkeleton());
+    auto AddMorph = [&](const TCHAR* Name, std::initializer_list<int32> Vertices, float Displacement)
+    {
+        auto* Morph = NewObject<UMorphTarget>(Asset, Name);
+        FMorphTargetLODModel Data; Data.NumBaseMeshVerts = 3;
+        for (int32 Vertex : Vertices)
+        {
+            FMorphTargetDelta Delta;
+            Delta.SourceIdx = Vertex; Delta.PositionDelta = FVector3f(0, 0, Displacement);
+            Delta.TangentZDelta = FVector3f::ZeroVector; Data.Vertices.Add(Delta);
+        }
+        Data.NumVertices = Data.Vertices.Num();
+        Morph->GetMorphLODModels().Add(Data); Asset->GetMorphTargets().Add(Morph);
+    };
+    // Smile is exactly the sum of its wink halves, as in the reported source PMX.
+    AddMorph(TEXT("ウィンク"), {0}, -1.f); AddMorph(TEXT("ウィンク右"), {1}, -1.f);
+    AddMorph(TEXT("笑い"), {0, 1}, -1.f); AddMorph(TEXT("びっくり"), {0, 1}, .7f);
+    AddMorph(TEXT("まばたき"), {0, 1}, -.8f);
+    AddMorph(TEXT("ウィンク２"), {0}, -.8f); AddMorph(TEXT("ｳｨﾝｸ２右"), {1}, -.8f);
+    AddMorph(TEXT("あ"), {2}, -.5f);
+    auto* Mesh = NewObject<USkeletalMeshComponent>(); Mesh->SetSkeletalMesh(Asset);
+    auto* Rig = NewObject<UVtuberRigComponent>();
+    if (!TestTrue(TEXT("Initialize eye fixture through the runtime rig"), Rig->Initialize(Mesh))) return false;
+    const FName Keys[] = {TEXT("eyeBlinkLeft"), TEXT("eyeBlinkRight"), TEXT("eyeSquintLeft"), TEXT("eyeSquintRight"), TEXT("eyeWideLeft"), TEXT("eyeWideRight"), TEXT("jawOpen")};
+    auto FindMapping = [&](FName Channel)
+    {
+        for (const auto& Mapping : Rig->GetMappings()) if (Mapping.Channel == Channel) return Mapping;
+        return FVtuberMorphMapping();
+    };
+    TestEqual(TEXT("Normal unilateral left takes priority over smiling wink and bilateral blink"), FindMapping(Keys[0]).Morph, FName(TEXT("ウィンク２")));
+    TestEqual(TEXT("Halfwidth normal unilateral right matches the generic alias"), FindMapping(Keys[1]).Morph, FName(TEXT("ｳｨﾝｸ２右")));
+    TestEqual(TEXT("Width normalization also matches fullwidth Latin names and digits"), NormalizeName(TEXT("Ｂｌｉｎｋ２_右")), NormalizeName(TEXT("blink2右")));
+    for (FName Key : Keys)
+    {
+        FVtuberChannelResponse Response = Rig->GetChannelResponse(Key);
+        Response.Lower = 0; Response.Upper = 1; Response.SmoothingSeconds = 0;
+        TestTrue(TEXT("Linear response for eye fixture"), Rig->SetChannelResponse(Key, Response));
+    }
+    auto Drive = [&](float BlinkL, float BlinkR, float SquintL = 0.f, float SquintR = 0.f, float WideL = 0.f, float WideR = 0.f)
+    {
+        const float Values[] = {BlinkL, BlinkR, SquintL, SquintR, WideL, WideR, .73f};
+        FVtuberTrackingSnapshot Snapshot;
+        Snapshot.TimestampSeconds = FPlatformTime::Seconds(); Snapshot.bFaceTracked = true;
+        for (int32 Index = 0; Index < 7; ++Index) Snapshot.BlendShapes.Add(Keys[Index], Values[Index]);
+        Rig->SubmitSnapshot(Snapshot); Rig->UpdateTracking(1.f / 60.f);
+    };
+    auto Weight = [&](const TCHAR* Name) { return Mesh->GetMorphTarget(Name); };
+    Drive(1, 0);
+    TestEqual(TEXT("Left-only input closes left normal blink"), Weight(TEXT("ウィンク２")), 1.f);
+    TestEqual(TEXT("Left-only input keeps right eye open"), Weight(TEXT("ｳｨﾝｸ２右")), 0.f);
+    Drive(0, 1);
+    TestEqual(TEXT("Right-only input closes right normal blink"), Weight(TEXT("ｳｨﾝｸ２右")), 1.f);
+    TestEqual(TEXT("Right-only input keeps left eye open"), Weight(TEXT("ウィンク２")), 0.f);
+    Drive(1, 1, .3f, 0, 1, 1);
+    TestEqual(TEXT("Full normal blink excludes additive smile closure"), Weight(TEXT("笑い")), 0.f);
+    TestEqual(TEXT("Full normal blink excludes opposite wide shape"), Weight(TEXT("びっくり")), 0.f);
+    TestTrue(TEXT("Mouth output is unchanged by eye budgeting"), FMath::IsNearlyEqual(Weight(TEXT("あ")), .73f));
+    Drive(0, 0, .2f, .8f);
+    TestTrue(TEXT("Bilateral shared squint uses Max rather than sum"), FMath::IsNearlyEqual(Weight(TEXT("笑い")), .8f));
+    Drive(.7f, .2f, .8f, .3f, .9f, .9f);
+    TestTrue(TEXT("Shared smile respects the more closed eye's remainder"), FMath::IsNearlyEqual(Weight(TEXT("笑い")), .3f));
+    TestTrue(TEXT("Left-side shape coefficients remain within one"), Weight(TEXT("ウィンク２")) + Weight(TEXT("笑い")) + Weight(TEXT("びっくり")) <= 1.00001f);
+    TestTrue(TEXT("Right-side shape coefficients remain within one"), Weight(TEXT("ｳｨﾝｸ２右")) + Weight(TEXT("笑い")) + Weight(TEXT("びっくり")) <= 1.00001f);
+
+    auto MapBlink = [&](int32 Index, const TCHAR* Target)
+    {
+        auto Mapping = FindMapping(Keys[Index]); Mapping.Morph = Target;
+        return Rig->SetMapping(Mapping);
+    };
+    TestTrue(TEXT("Keep an explicit legacy left wink mapping"), MapBlink(0, TEXT("ウィンク")));
+    TestTrue(TEXT("Keep an explicit legacy right wink mapping"), MapBlink(1, TEXT("ウィンク右")));
+    Drive(1, 1, .3f, 0, 1, 1);
+    TestEqual(TEXT("Legacy closed left does not exceed authored smile delta"), Weight(TEXT("ウィンク")) + Weight(TEXT("笑い")), 1.f);
+    TestEqual(TEXT("Legacy closed right does not exceed authored smile delta"), Weight(TEXT("ウィンク右")) + Weight(TEXT("笑い")), 1.f);
+    TestEqual(TEXT("Legacy closure also suppresses wide"), Weight(TEXT("びっくり")), 0.f);
+    auto NarrowWide = Rig->GetChannelResponse(Keys[4]); NarrowWide.Upper = .01f;
+    TestTrue(TEXT("Keep valid saved narrow-wide calibration"), Rig->SetChannelResponse(Keys[4], NarrowWide));
+    Drive(1, 1, .3f, 0, .02f, 0);
+    TestEqual(TEXT("Saturated wide cannot reopen fully closed eyes"), Weight(TEXT("びっくり")), 0.f);
+    TestEqual(TEXT("Budget does not rewrite saved wide range"), Rig->GetChannelResponse(Keys[4]).Upper, .01f);
+    const FString Profile = FPaths::ProjectSavedDir() / TEXT("Automation/EyeMorphBudget.json");
+    FString Error;
+    TestTrue(TEXT("Save custom eye mappings"), Rig->SaveProfile(Profile, Error));
+    TestTrue(TEXT("Reload custom eye mappings"), Rig->LoadProfile(Profile, Error));
+    TestEqual(TEXT("Saved legacy mapping remains explicit"), FindMapping(Keys[0]).Morph, FName(TEXT("ウィンク")));
+    TestEqual(TEXT("Saved narrow range remains unchanged"), Rig->GetChannelResponse(Keys[4]).Upper, .01f);
+    IFileManager::Get().Delete(*Profile);
+    TestTrue(TEXT("Shared bilateral blink mapping is supported"), MapBlink(0, TEXT("まばたき")) && MapBlink(1, TEXT("まばたき")));
+    Drive(.2f, .8f);
+    TestTrue(TEXT("Shared bilateral blink keeps Max behavior"), FMath::IsNearlyEqual(Weight(TEXT("まばたき")), .8f));
+    Mesh->AnimScriptInstance = nullptr;
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberAnatomicalRetargetTest, "HonkaiVTuber.Rig.AnatomicalRetarget", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
 {
@@ -1943,6 +2174,7 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     Instance->DstVrmAssetList = nullptr;
 #endif
     Submit(Neutral);
+    for (int32 I = 0; I < 90; ++I) Rig->UpdateTracking(1.f / 60.f);
     Pose = Evaluate();
     for (int32 I = 0; I < Pose.Num(); ++I)
         TestTrue(FString::Printf(TEXT("Neutral retains nonidentity bind pose %d"), I), Pose[I].Equals(Rest[I], .0001f));
@@ -1950,16 +2182,64 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Root is never targeted"), Instance->BodyComponentRotations.Contains(TEXT("root")));
     TestFalse(TEXT("Lower body is never targeted"), Instance->BodyComponentRotations.Contains(TEXT("下半身")));
 
-    FVtuberTrackingSnapshot Lean = Neutral;
+    // A stationary tracked torso must not pass subdegree landmark noise through
+    // to the final pose. This exercises snapshot, rig and animation proxy.
+    auto RotateTorso = [&](FVtuberTrackingSnapshot Frame, float Roll)
+    {
+        const FQuat Rotation = FRotator(0, 0, Roll).Quaternion();
+        for (auto& Point : Frame.PoseWorldLandmarks)
+            if (Point.Visibility > .45f) Point.Position = MP(Rotation.RotateVector(TrackingToCanonical(Point.Position)));
+        return Frame;
+    };
+    const int32 ChestIndex = Indices.FindChecked(TEXT("上半身2"));
+    const FQuat StillChest = ComponentPose(Evaluate())[ChestIndex].GetRotation();
+    float PeakChestNoise = 0.f;
+    for (int32 I = 0; I < 40; ++I)
+    {
+        Submit(RotateTorso(Neutral, I % 2 ? .9f : -.9f));
+        const FQuat Chest = ComponentPose(Evaluate())[ChestIndex].GetRotation();
+        PeakChestNoise = FMath::Max(PeakChestNoise, FMath::RadiansToDegrees(Chest.AngularDistance(StillChest)));
+    }
+    TestTrue(TEXT("Stationary pose rejects subdegree torso noise through proxy"), PeakChestNoise < .3f);
+
+    FVtuberTrackingSnapshot Slow = Neutral;
+    for (int32 I = 1; I <= 120; ++I) { Slow = RotateTorso(Neutral, 10.f * I / 120.f); Submit(Slow); }
+    const float SlowAngle = FMath::RadiansToDegrees(ComponentPose(Evaluate())[ChestIndex].GetRotation().AngularDistance(StillChest));
+    TestTrue(TEXT("Slow torso movement follows the person"), SlowAngle > 8.f && SlowAngle <= 10.1f);
+    for (int32 I = 0; I < 60; ++I) Submit(Slow);
+    const float StillAngle = FMath::RadiansToDegrees(ComponentPose(Evaluate())[ChestIndex].GetRotation().AngularDistance(StillChest));
+    TestTrue(TEXT("New stationary pose does not drift back to neutral"), StillAngle > 8.f && StillAngle <= 10.1f);
+    for (int32 I = 0; I < 90; ++I) Submit(Neutral);
+
+    FVtuberTrackingSnapshot Lean = RotateTorso(Neutral, 12.f);
     const FQuat TorsoLean = FRotator(0, 0, 12).Quaternion();
-    for (auto& Point : Lean.PoseWorldLandmarks)
-        if (Point.Visibility > .45f) Point.Position = MP(TorsoLean.RotateVector(TrackingToCanonical(Point.Position)));
     Lean.HeadRotation = FRotator(0, 20, 0).Quaternion();
     Submit(Lean);
+    for (int32 I = 0; I < 15; ++I) Rig->UpdateTracking(1.f / 60.f);
+    const float StepAngle = FMath::RadiansToDegrees(ComponentPose(Evaluate())[ChestIndex].GetRotation().AngularDistance(StillChest));
+    TestTrue(TEXT("Fast torso step moves within a quarter second"), StepAngle > 8.f && StepAngle <= 12.1f);
+    for (int32 I = 0; I < 90; ++I) Rig->UpdateTracking(1.f / 60.f);
     const FQuat ExpectedHead = Lean.HeadRotation * GlobalRest[Indices.FindChecked(TEXT("頭"))].GetRotation();
     TestTrue(TEXT("Head component target does not inherit torso/neck twice"), Instance->BodyComponentRotations.FindChecked(TEXT("頭")).Equals(ExpectedHead, .0001f));
     const FQuat ExpectedUpper = TorsoLean * GlobalRest[Indices.FindChecked(TEXT("左腕"))].GetRotation();
     TestTrue(TEXT("Torso roll carries arm axial rotation through PMX helper chain"), Instance->BodyComponentRotations.FindChecked(TEXT("左腕")).Equals(ExpectedUpper, .0001f));
+    const FQuat HeldLean = ComponentPose(Evaluate())[ChestIndex].GetRotation();
+    float PeakLeanNoise = 0.f;
+    for (int32 I = 0; I < 40; ++I)
+    {
+        Submit(RotateTorso(Neutral, 12.f + (I % 2 ? .9f : -.9f)));
+        PeakLeanNoise = FMath::Max(PeakLeanNoise,
+            FMath::RadiansToDegrees(ComponentPose(Evaluate())[ChestIndex].GetRotation().AngularDistance(HeldLean)));
+    }
+    TestTrue(TEXT("Noise is suppressed around a nonneutral body pose"), PeakLeanNoise < .3f);
+    auto TunedChest = Rig->GetChannelResponse(TEXT("chest"));
+    TunedChest.Sensitivity = .5f;
+    TestTrue(TEXT("Tuned torso response accepted"), Rig->SetChannelResponse(TEXT("chest"), TunedChest));
+    for (int32 I = 0; I < 90; ++I) Submit(Lean);
+    TestFalse(TEXT("Tuned response closes steady gate after settling"), Rig->SteadyBodyTargets.FindChecked(TEXT("chest")).Gate.bMoving);
+    TunedChest.Sensitivity = 1.f;
+    Rig->SetChannelResponse(TEXT("chest"), TunedChest);
+    for (int32 I = 0; I < 90; ++I) Submit(Lean);
     Pose = Evaluate();
     for (const TCHAR* Name : {TEXT("root"), TEXT("腰"), TEXT("下半身"), TEXT("左肩"), TEXT("左腕捩"), TEXT("左手捩")})
     {
@@ -1975,6 +2255,7 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     const FVector Shoulder = RestPosition(TEXT("左腕"));
     SetPose(Bent, 13, Shoulder + Upper * .24); SetPose(Bent, 15, Shoulder + Upper * .24 + Lower * .22);
     Submit(Bent);
+    for (int32 I = 0; I < 90; ++I) Rig->UpdateTracking(1.f / 60.f);
     for (const auto& Pair : TArray<TPair<FName, FName>>{{TEXT("upperarm_l"), TEXT("lowerarm_l")}, {TEXT("lowerarm_l"), TEXT("hand_l")}})
     {
         const int32 A = Indices.FindChecked(Rig->GetBodyBone(Pair.Key)), B = Indices.FindChecked(Rig->GetBodyBone(Pair.Value));
@@ -1991,11 +2272,14 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     Submit(Missing);
     TestFalse(TEXT("Low confidence shoulders reject torso"), Rig->IsBodyChannelTracked(TEXT("spine")));
     TestFalse(TEXT("Low confidence chain rejects arm"), Rig->IsBodyChannelTracked(TEXT("upperarm_l")));
-    const FQuat FirstReturn = Rig->SmoothedBody.FindChecked(TEXT("upperarm_l"));
+    const FQuat FirstHold = Rig->SmoothedBody.FindChecked(TEXT("upperarm_l"));
     const int32 IdleUpper = Indices.FindChecked(TEXT("左腕"));
     const FQuat IdleDelta = Rest[IdleUpper].GetRotation().Inverse() * Rig->IdleArmLocalRotations.FindChecked(TEXT("upperarm_l"));
-    TestTrue(TEXT("Tracking loss returns toward idle continuously rather than snapping"),
-        !FirstReturn.Equals(BeforeLoss, .0001) && !FirstReturn.Equals(IdleDelta, .0001));
+    TestTrue(TEXT("One dropped body frame holds its last target"), FirstHold.Equals(BeforeLoss, .0001f));
+    for (int32 I = 0; I < 12; ++I) Rig->UpdateTracking(1.f / 60.f);
+    const FQuat FirstReturn = Rig->SmoothedBody.FindChecked(TEXT("upperarm_l"));
+    TestTrue(TEXT("Sustained loss returns toward idle continuously"),
+        !FirstReturn.Equals(BeforeLoss, .0001f) && !FirstReturn.Equals(IdleDelta, .0001f));
     for (int32 I = 0; I < 80; ++I) Rig->UpdateTracking(.1f);
     Pose = Evaluate();
     CheckIdle(Pose);
@@ -2025,8 +2309,10 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Collapsed palm cannot drive fingers"), Rig->IsBodyChannelTracked(TEXT("thumb1_l")));
 
     Lean.bFaceTracked = false; Submit(Lean);
+    for (int32 I = 0; I < 90; ++I) Rig->UpdateTracking(1.f / 60.f);
     TestTrue(TEXT("Standing body can calibrate without a face"), Rig->CalibrateNeutral());
     Submit(Lean);
+    for (int32 I = 0; I < 90; ++I) Rig->UpdateTracking(1.f / 60.f);
     TestTrue(TEXT("Standing calibration removes captured torso lean"), Rig->SmoothedBody.FindChecked(TEXT("spine")).Equals(FQuat::Identity, .0001f));
 
     const FString Path = FPaths::ProjectSavedDir() / TEXT("Automation/VtuberLegacyRetarget.json");

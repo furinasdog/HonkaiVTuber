@@ -2,7 +2,7 @@
 
 从 HonkaiRendering `8ba15b0` 派生的 UE 5.8 原生 C++ VTuber 预览工程。当前包含面部、头部、上半身与手部通道、可编辑响应曲线和不透明 Spout 输出；真人动捕与完整第二阶段尚未验收。原静态查看器保留在独立仓库。
 
-运行说明见 [PHASE2_PREVIEW.md](PHASE2_PREVIEW.md)，本机实际验证与限制见 [PHASE2_VALIDATION.md](PHASE2_VALIDATION.md)，摄像头及推理说明见 [NativeTracking.md](NativeTracking.md)。内置摄像头当前实测接近黑帧、约 1 FPS，停止存在驱动延迟，不能据此宣称真人动作已还原。默认不启动摄像头。
+运行说明见 [PHASE2_PREVIEW.md](PHASE2_PREVIEW.md)，本机实际验证与限制见 [PHASE2_VALIDATION.md](PHASE2_VALIDATION.md)，摄像头及推理说明见 [NativeTracking.md](NativeTracking.md)。当前默认进程内动捕；旧 EXE 后端的黑帧、约 1 FPS 及退出延迟是历史记录，不代表当前插件表现。默认不启动摄像头，真人效果由用户验收。
 
 以下保留上游静态查看器说明。派生工程的用户数据根目录改为 `%LOCALAPPDATA%/HonkaiVTuber`。
 
@@ -17,7 +17,7 @@ An open-source UE 5.8 MMD character viewer and Honkai-inspired toon-rendering st
 默认只显示角色与 Blender 中性灰背景。将包含 PMX 和贴图的 ZIP 拖入窗口，在画面内选择 PMX。按 H 或 Esc 显示左上角可拖动、可收起的浮动导航，分为“模型、捕捉、映射、画面、场景、应用”六组；子页在同一视口内浮动，不创建独立窗口。H 隐藏或恢复导航与子页；Esc 关闭当前子页，再按 Esc 隐藏或恢复导航。普通子页的空白区域仍可操控视角，选择 PMX 与加载状态页会阻止误操作。文件导入失败会给出可关闭的提示，已加载模型会保留。
 
 - 中键拖动：绕模型旋转，水平方向跟随拖动；Shift + 中键：平移；Ctrl + 中键或滚轮：缩放。
-- WASD：水平移动角色；Shift：上移角色；Space：下移角色。
+- WASD：水平移动角色；Shift：上移角色；Space：下移角色。按下和松开时平滑加减速，失去焦点时停止移动。
 - 小键盘 1 / 3 / 7：正面 / 右侧 / 顶部；Ctrl 配合为反向视图。
 - 小键盘 5：正交 / 透视；小键盘小数点或 Home：聚焦。
 

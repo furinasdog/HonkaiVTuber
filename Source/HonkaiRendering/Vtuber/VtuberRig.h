@@ -87,6 +87,41 @@ struct FVtuberRigSettings
     FVtuberThresholdCurve YawPositive, YawNegative, PitchPositive, PitchNegative, RollPositive, RollNegative;
 };
 
+// BODY_STEADY_GATE_BEGIN
+// Plain C++ decision seam also exercised by Saved/Tests/BodyJitterDiagnostics.
+struct FVtuberBodySteadyGate
+{
+    bool bHasTarget = false;
+    bool bMoving = false;
+    float MissingSeconds = 0.f;
+
+    // 0: return to idle; 1: hold accepted target; 2: accept measured target.
+    int Advance(bool bTracked, float DeltaSeconds, float GapDegrees, float HoldDegrees, float ResumeDegrees)
+    {
+        if (bTracked)
+        {
+            MissingSeconds = 0.f;
+            if (!bHasTarget) { bHasTarget = true; bMoving = false; return 2; }
+            if (bMoving && GapDegrees <= HoldDegrees) bMoving = false;
+            else if (!bMoving && GapDegrees >= ResumeDegrees) bMoving = true;
+            return bMoving ? 2 : 1;
+        }
+        if (!bHasTarget) return 0;
+        MissingSeconds += DeltaSeconds;
+        if (MissingSeconds <= .12f) return 1;
+        bHasTarget = bMoving = false;
+        return 0;
+    }
+};
+// BODY_STEADY_GATE_END
+
+struct FVtuberSteadyBodyTarget
+{
+    FQuat Accepted = FQuat::Identity;
+    FQuat Output = FQuat::Identity;
+    FVtuberBodySteadyGate Gate;
+};
+
 UCLASS(Transient)
 class UVtuberAnimInstance : public UVrmAnimInstanceCopy
 {
@@ -152,6 +187,7 @@ private:
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FVtuberRuntimeRigTest;
     friend class FVtuberAnatomicalRetargetTest;
+    friend class FVtuberEyeMorphBudgetTest;
 #endif
     void UpdateTracking(float DeltaTime);
     void BuildDefaultMappings();
@@ -172,6 +208,7 @@ private:
     // Display-only local targets; source bind transforms remain the tracking reference.
     TMap<FName, FQuat> IdleArmLocalRotations;
     TMap<FName, FQuat> SmoothedBody;
+    TMap<FName, FVtuberSteadyBodyTarget> SteadyBodyTargets;
     TSet<FName> TrackedBodyChannels;
     TArray<FTransform> ReferenceComponentPose;
     FQuat NeutralBodyFrame = FQuat::Identity;

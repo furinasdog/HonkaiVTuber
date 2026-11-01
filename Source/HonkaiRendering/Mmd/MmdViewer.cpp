@@ -38,6 +38,7 @@
 #include "Vtuber/VtuberOutput.h"
 #include "Vtuber/SVtuberRigPanel.h"
 #include "Vtuber/SVtuberCaptureResults.h"
+#include "Vtuber/SVtuberCalibrationWizard.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Rendering/SkeletalMeshRenderData.h"
@@ -330,6 +331,7 @@ public:
     TSharedPtr<SBorder> MenuLayer;
     TSharedPtr<SBox> PageHost;
     TSharedPtr<SVtuberRigPanel> MappingPanel;
+    TSharedPtr<SVtuberCalibrationWizard> CalibrationPanel;
     TSharedPtr<SBox> ResultsHost;
     TSharedPtr<SVtuberCaptureResults> ResultsPanel;
     FVector2D ResultsPosition{960, 40};
@@ -439,14 +441,14 @@ public:
         SCompoundWidget::Tick(Geometry, Time, Delta);
         PageHost->SetRenderOpacity(MenuFade.GetLerp());
         MenuLayer->SetVisibility(bHudVisible ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed);
-        if (!IsMenuBlocking() && !bDragging && Controller.IsValid())
+        FVector Movement = FVector::ZeroVector;
+        if (!IsMenuBlocking() && !bDragging)
         {
-            FVector Movement(0, 0, 0);
             Movement.X = float(PlacementKeys.Contains(EKeys::W)) - float(PlacementKeys.Contains(EKeys::S));
             Movement.Y = float(PlacementKeys.Contains(EKeys::D)) - float(PlacementKeys.Contains(EKeys::A));
             Movement.Z = float(PlacementKeys.Contains(EKeys::LeftShift) || PlacementKeys.Contains(EKeys::RightShift)) - float(PlacementKeys.Contains(EKeys::SpaceBar));
-            Controller->MoveCharacter(Movement, Delta);
         }
+        if (Controller.IsValid()) Controller->MoveCharacter(Movement, Delta);
     }
     bool IsMenuBlocking() const
     {
@@ -459,6 +461,7 @@ public:
         bHudVisible = !bHudVisible;
         if (Controller.IsValid()) Controller->Tracking.SetPreviewEnabled(bHudVisible && bResultsOpen);
         PlacementKeys.Reset();
+        if (Controller.IsValid()) Controller->StopCharacterMovement();
         if (FSlateApplication::IsInitialized()) FSlateApplication::Get().SetKeyboardFocus(SharedThis(this));
     }
     void MovePanel(FVector2D& Position, FVector2D Delta, FVector2D Size)
@@ -513,6 +516,7 @@ public:
     {
         if (MappingPanel) MappingPanel->FlushSave();
         MappingPanel.Reset();
+        CalibrationPanel.Reset();
         bMenuOpen = false;
         CurrentPage = "Main";
         if (Controller.IsValid()) { Controller->bChoosing = false; Controller->ClearMaterialPreview(); }
@@ -531,8 +535,10 @@ public:
         if (Page == "Main") { CloseWindow(); bHudVisible = true; return; }
         if (MappingPanel) MappingPanel->FlushSave();
         MappingPanel.Reset();
+        CalibrationPanel.Reset();
         CurrentPage = Page;
         PlacementKeys.Reset();
+        if (Controller.IsValid()) Controller->StopCharacterMovement();
         TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
         auto Add = [&](TSharedRef<SWidget> Widget) { Body->AddSlot().AutoHeight().Padding(0, 0, 0, 10)[Widget]; };
         FString Title = TEXT("菜单");
@@ -654,13 +660,39 @@ public:
                         return FReply::Handled();
                     })[Label(TEXT("校准当前姿态"), 12)]]);
             Add(Label(TEXT("正对镜头、保持自然姿态后校准。摄像头画面只在本机处理。"), 11, Muted));
+            Add(Button(TEXT("映射配置向导"), [this] { OpenPage("Calibration"); }));
         }
         else if (Page == "Mapping")
         {
             Title = TEXT("动作映射");
+            Add(Button(TEXT("映射配置向导"), [this] { OpenPage("Calibration"); }));
             if (Controller->Rig) Add(SAssignNew(MappingPanel, SVtuberRigPanel, Controller->Rig.Get()));
             else Add(Label(TEXT("请先导入角色。")));
             Add(Button(TEXT("返回"), [this] { OpenPage(); }));
+        }
+        else if (Page == "Calibration")
+        {
+            Title = TEXT("映射配置向导");
+            if (Controller.IsValid() && Controller->Rig)
+            {
+                const TWeakObjectPtr<UVtuberRigComponent> CalibratingRig = Controller->Rig.Get();
+                const TWeakPtr<SMmdViewer> Weak = SharedThis(this);
+                Add(SAssignNew(CalibrationPanel, SVtuberCalibrationWizard, CalibratingRig.Get())
+                    .GetSnapshot_Lambda([this] { return Controller.IsValid() ? Controller->LastTrackingSnapshot : FVtuberTrackingSnapshot(); })
+                    .IsTracking_Lambda([this, CalibratingRig]
+                    {
+                        if (!Controller.IsValid() || !CalibratingRig.IsValid() || Controller->Rig != CalibratingRig.Get()
+                            || Controller->bBusy || !bHudVisible || !bMenuOpen || CurrentPage != "Calibration") return false;
+                        bool bRunning = Controller->Tracking.IsRunning() && !Controller->Tracking.IsStopping();
+#if WITH_DEV_AUTOMATION_TESTS
+                        bRunning |= Controller->bTrackingReplay;
+#endif
+                        return bRunning && Controller->LastTrackingFrame > 0
+                            && FPlatformTime::Seconds() - Controller->LastTrackingFrame < .5;
+                    })
+                    .OnFinished_Lambda([Weak] { if (auto Self = Weak.Pin()) Self->OpenPage("Mapping"); }));
+            }
+            else Add(Label(TEXT("请先导入角色，再启动捕捉。")));
         }
         else if (Page == "Output")
         {
@@ -775,7 +807,7 @@ public:
             if (!Controller->bBusy) Add(Button(TEXT("关闭"), [this] { CloseWindow(); }));
         }
         TWeakPtr<SMmdViewer> Weak = SharedThis(this);
-        const bool bWidePage = Page == "Mapping";
+        const bool bWidePage = Page == "Mapping" || Page == "Calibration";
         PageSize = bWidePage ? FVector2D(880, 680) : Page == "Tracking" ? FVector2D(560, 700) : FVector2D(560, 520);
         const FVector2D Viewport = GetCachedGeometry().GetLocalSize();
         PagePosition = FVector2D(FMath::Max(0.f, (Viewport.X - PageSize.X) * .5f),
@@ -804,7 +836,12 @@ public:
         if (Event.GetKey() == EKeys::Escape) { if (!bHudVisible) ToggleHud(); else if (bMenuOpen) CloseWindow(); else ToggleHud(); return FReply::Handled(); }
         return FReply::Unhandled();
     }
-    virtual void OnFocusLost(const FFocusEvent& Event) override { PlacementKeys.Reset(); SCompoundWidget::OnFocusLost(Event); }
+    virtual void OnFocusLost(const FFocusEvent& Event) override
+    {
+        PlacementKeys.Reset();
+        if (Controller.IsValid()) Controller->StopCharacterMovement();
+        SCompoundWidget::OnFocusLost(Event);
+    }
     virtual FReply OnKeyUp(const FGeometry&, const FKeyEvent& Event) override
     {
         if (PlacementKeys.Remove(Event.GetKey())) return FReply::Handled();
@@ -1078,7 +1115,36 @@ bool FMmdEffectToggleTest::RunTest(const FString& Parameters)
     Controls->PlacementKeys.Reset();
     Controls->PlacementKeys.Add(EKeys::SpaceBar);
     Controls->Tick(FGeometry(), 0, .1f);
-    TestTrue(TEXT("Space lowers the character"), Controller->ModelActor->GetActorLocation().Z < RaisedZ);
+    Controls->Tick(FGeometry(), .1, .1f);
+    TestTrue(TEXT("Space lowers the character after smooth reversal"), Controller->ModelActor->GetActorLocation().Z < RaisedZ);
+    Controller->StopCharacterMovement();
+    Controller->ModelActor->SetActorLocation(FVector::ZeroVector);
+    Controller->MoveCharacter(FVector::ForwardVector, .02f);
+    const double FirstTravel = Controller->ModelActor->GetActorLocation().Size();
+    TestTrue(TEXT("Movement starts below full speed"), FirstTravel > 0 && FirstTravel < .5);
+    const double FirstSpeed = Controller->MovementVelocity.Size();
+    Controller->MoveCharacter(FVector::ZeroVector, .02f);
+    TestTrue(TEXT("Key release decelerates smoothly"), Controller->MovementVelocity.Size() > 0
+        && Controller->MovementVelocity.Size() < FirstSpeed);
+    Controls->OnFocusLost(FFocusEvent(EFocusCause::SetDirectly, 0));
+    TestTrue(TEXT("Focus loss clears residual movement"), Controller->MovementVelocity.IsZero());
+    auto Travel = [&](int32 Fps, FVector Input)
+    {
+        Controller->StopCharacterMovement();
+        Controller->ModelActor->SetActorLocation(FVector::ZeroVector);
+        for (int32 Frame = 0; Frame < Fps; ++Frame) Controller->MoveCharacter(Input, 1.f / Fps);
+        for (int32 Frame = 0; Frame < Fps; ++Frame) Controller->MoveCharacter(FVector::ZeroVector, 1.f / Fps);
+        TestTrue(TEXT("Released movement settles to rest"), Controller->MovementVelocity.IsZero());
+        return Controller->ModelActor->GetActorLocation();
+    };
+    const FVector At30 = Travel(30, FVector::ForwardVector);
+    TestTrue(TEXT("Movement distance is consistent at 30 and 120 FPS"), At30.Equals(Travel(120, FVector::ForwardVector), .002));
+    TestTrue(TEXT("Diagonal movement keeps the same speed"), FMath::IsNearlyEqual(At30.Size(), Travel(30, FVector(1, 1, 1)).Size(), .002));
+    Controller->Rig = NewObject<UVtuberRigComponent>(Controller);
+    Controls->OpenPage("Calibration");
+    TestTrue(TEXT("Calibration wizard opens inside the viewer"), Controls->CalibrationPanel.IsValid());
+    Controls->CloseWindow();
+    TestFalse(TEXT("Closing calibration releases its pending session"), Controls->CalibrationPanel.IsValid());
     Controller->Orbit(FVector2D(10.f, 0.f), false, false);
     TestTrue(TEXT("Horizontal orbit follows the corrected drag direction"), Controller->Rotation.Yaw > 0.f);
     World->DestroyWorld(false);
@@ -1312,6 +1378,7 @@ void AMmdViewerController::LoadModel(const FString& Path)
     if (!ImportTemplate || !ImportTemplate->MtoonUnlitSet) { Status = TEXT("缺少 VRM4U 默认导入资源。"); return; }
     Enhancement.Cancel(); bGenerationPending = false; ClearMaterialPreview();
     PendingPath = Path; bBusy = true; bChoosing = false; Status = TEXT("正在加载模型与贴图…"); Widget->OpenPage("Status");
+    StopCharacterMovement();
     FImportOptionData Options;
     Options.ModelScale = 0.1f;
     Options.MaterialType = EVRMImportMaterialType::VRMIMT_MToonUnlit;
@@ -1509,7 +1576,8 @@ void AMmdViewerController::OnModelLoaded()
             const FName Page = CapturePage.Equals(TEXT("Mapping"), ESearchCase::IgnoreCase) ? FName(TEXT("Mapping"))
                 : CapturePage.Equals(TEXT("Capture"), ESearchCase::IgnoreCase) ? FName(TEXT("Tracking"))
                 : CapturePage.Equals(TEXT("Nav"), ESearchCase::IgnoreCase) ? FName(TEXT("Main"))
-                : CapturePage.Equals(TEXT("Results"), ESearchCase::IgnoreCase) ? FName(TEXT("Results")) : NAME_None;
+                : CapturePage.Equals(TEXT("Results"), ESearchCase::IgnoreCase) ? FName(TEXT("Results"))
+                : CapturePage.Equals(TEXT("Calibration"), ESearchCase::IgnoreCase) ? FName(TEXT("Calibration")) : NAME_None;
             if (!Page.IsNone())
             {
                 TWeakObjectPtr<AMmdViewerController> Weak(this);
@@ -1578,13 +1646,14 @@ void AMmdViewerController::ToggleTracking()
 #if WITH_DEV_AUTOMATION_TESTS
     if (bTrackingReplay) { Tracking.Status = TEXT("当前为离线姿态回放，未启动摄像头"); return; }
 #endif
-    if (Tracking.IsRunning()) { Tracking.Stop(); LastTrackingFrame = 0; bFaceSeen = bPoseSeen = false; HandsSeen = 0; }
+    if (Tracking.IsRunning()) { Tracking.Stop(); LastTrackingFrame = 0; LastTrackingSnapshot = {}; bFaceSeen = bPoseSeen = false; HandsSeen = 0; }
     else if (Rig) Tracking.Start();
     else Tracking.Status = TEXT("请先导入角色");
 }
 void AMmdViewerController::RecordTrackingFrame(const FVtuberTrackingSnapshot& Snapshot)
 {
     LastTrackingFrame = FPlatformTime::Seconds();
+    LastTrackingSnapshot = Snapshot;
     bFaceSeen = Snapshot.bFaceTracked;
     bPoseSeen = Snapshot.bPoseTracked && Snapshot.PoseLandmarks.Num() >= 33;
     HandsSeen = 0;
@@ -1645,9 +1714,18 @@ void AMmdViewerController::UpdateFaceLight()
 }
 void AMmdViewerController::MoveCharacter(FVector Direction, float DeltaSeconds)
 {
-    if (!ModelActor || !ViewerCamera || Direction.IsNearlyZero()) return;
+    if (!ModelActor || !ViewerCamera || bBusy || Direction.ContainsNaN() || !FMath::IsFinite(DeltaSeconds))
+    { StopCharacterMovement(); return; }
+    const float Delta = FMath::Clamp(DeltaSeconds, 0.f, .1f);
+    if (Delta <= 0.f) return;
     const FRotator Yaw(0, ViewerCamera->GetActorRotation().Yaw, 0);
-    const FVector Offset = Yaw.RotateVector(Direction.GetClampedToMaxSize(1.f)) * 50.f * FMath::Min(DeltaSeconds, .1f);
+    const FVector DesiredVelocity = Yaw.RotateVector(Direction.GetClampedToMaxSize(1.f)) * 50.f;
+    const float Seconds = Direction.IsNearlyZero() ? .08f : .10f;
+    const float Keep = FMath::Exp(-Delta / Seconds);
+    // Integrate the exponential ramp so travel stays consistent across frame rates.
+    const FVector Offset = DesiredVelocity * Delta + (MovementVelocity - DesiredVelocity) * Seconds * (1.f - Keep);
+    MovementVelocity = DesiredVelocity + (MovementVelocity - DesiredVelocity) * Keep;
+    if (MovementVelocity.IsNearlyZero(.001f)) MovementVelocity = FVector::ZeroVector;
     ModelActor->AddActorWorldOffset(Offset); ModelCenter += Offset;
 }
 

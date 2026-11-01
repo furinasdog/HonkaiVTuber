@@ -534,6 +534,15 @@ void SVtuberRigPanel::Construct(const FArguments&, UVtuberRigComponent* InRig)
                     .OnValueChanged_Lambda([this, FieldName](float Value) { SetResponseValue(FieldName, Value); })]], 7);
     };
     AddResponseRow(TEXT("smoothing"), TEXT("平滑时间"), 0.f, .5f, .01f);
+    AddRow(Details, SNew(STextBlock).Text(FText::FromString(TEXT("躯干和肩臂启用静止抑制，实际平滑不低于 0.08 秒。")))
+        .ColorAndOpacity(Muted).AutoWrapText(true)
+        .Visibility_Lambda([this]
+        {
+            const FString Channel = Representative(ActiveChannel()).ToString();
+            return Channel == TEXT("spine") || Channel == TEXT("chest") || Channel.StartsWith(TEXT("shoulder_"))
+                || Channel.StartsWith(TEXT("upperarm_")) || Channel.StartsWith(TEXT("lowerarm_"))
+                ? EVisibility::Visible : EVisibility::Collapsed;
+        }), 5);
     AddResponseRow(TEXT("sensitivity"), TEXT("灵敏度"), .1f, 3.f, .05f);
     AddResponseRow(TEXT("curvature"), TEXT("曲率"), 0.f, 1.f, .01f);
     AddResponseRow(TEXT("precision"), TEXT("精度"), 0.f, 200.f, 1.f);

@@ -1,5 +1,17 @@
 # Local validation
 
+## Tracking stabilization, eye blending and calibration — 2026-11-02
+
+Both Win64 Development Editor builds passed. Each project's `Saved/Tests/TrackingCalibrationVerified/index.json` records 35 successes and one success with the expected incompatible-profile warning, zero failures and zero tests not run. These engine assertions cover the real rig update, morph weights, idle/tracking transitions, keyboard movement, five-step calibration sampling and file-save rollback. They are separate from live-camera and rendering-fidelity acceptance.
+
+The pre-fix `BodyJitterRed` run fails the new stationary +/-0.9-degree torso-noise assertion through SubmitSnapshot, tracking update and the animation proxy. The final `AnatomicalRetarget` test passes static noise, slow motion, a step, a new stationary pose, short/long dropout and non-default sensitivity checks while retaining the anatomical direction assertions. A shared C++ gate harness also passes eight cases. This does not establish that all movement in the supplied recording was recognition noise; no raw tracking trace was provided.
+
+An independent source-PMX audit found additive blink/squint eye deformation and six extra eyelash triangle flips in the constructed conflict input. The extracted production eye blend removes those extra flips; `EyeMorphBudget` verifies bounded per-eye blending through the actual rig. The existing saved profile is deliberately preserved, including its selected smile-eye targets and narrow eye-wide range. New default mappings prefer normal blink names and normalize Japanese half-width names on Windows. The five-channel wizard recalibrates mouth/smile/blink only; other manual channels are retained.
+
+The Windows profile-write native harness reproduces loss of old file bytes with the former delete-then-move behavior and passes 18 assertions with same-directory MoveFileExW replacement. `Calibration.LockedProfileRollback` additionally tests real Windows sharing failure, unchanged old disk bytes, memory rollback, unlock/retry and reload through the production parser. No general power-loss transaction guarantee is claimed.
+
+Private evidence stays in ignored `Saved/Tests/BodyJitterDiagnostics`, `Saved/Tests/BlinkMorphAudit` and `Saved/Tests/ProfileSaveAudit`. User media, models, profiles and comparison screenshots are excluded from Git. Real-person calibration comfort, camera jitter reduction and sustained hardware behavior remain for the user's live test.
+
 ## Hard toon shadows and enhancement workflow — 2026-11-01
 
 Body and face shading now use two endpoint colors with derivative-sized boundary antialiasing. The former fixed transition widths (0.035 body / 0.012 face) are removed. Source texture colors, sphere reflections, narrow rim light and bloom can still vary continuously; these are not a broad lighting transition. The small nose shadow uses a separate binary region in the face map alpha channel, preserving the B-channel nose outline control. Its strength responds to light direction, but its shape does not move from side to side. It is a stylized approximation, not a recovered game FaceMap.

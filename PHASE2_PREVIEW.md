@@ -1,6 +1,6 @@
 # HonkaiVTuber preview
 
-Independent derivative of HonkaiRendering, starting at `8ba15b0`. The C++ module and `.uproject` keep their original internal names to preserve asset references; the visible application is HonkaiVTuber. Phase 2 changes are local and await user review before commit/push.
+Independent derivative of HonkaiRendering, starting at `8ba15b0`. The C++ module and `.uproject` keep their original internal names to preserve asset references; the visible application is HonkaiVTuber. Shared fixes are maintained in both repositories.
 
 ## Run
 
@@ -16,6 +16,8 @@ The native parser and rig now accept pose and two-hand landmarks, and a developm
 
 In a development Editor build, `-VtuberReplay=<absolute JSON path>` reads one native-tracker JSON frame and resubmits it with a fresh timestamp each tick. It logs `VTUBER_REPLAY offline=1` and skips automatic camera startup even when `-VtuberCamera` is also present. This is a static pose test, not a recording of a user session.
 
-For a GPU UI check with `-MmdCapture=<absolute PNG path>`, add `-MmdCapturePage=Mapping`, `Capture`, or `Nav`. The selected in-viewport page opens six seconds after model load, and the existing screenshot request runs at eight seconds. `Capture` selects the Tracking page; `Nav` shows only the floating navigation. No camera is started by this page-selection hook.
+For a GPU UI check with `-MmdCapture=<absolute PNG path>`, add `-MmdCapturePage=Mapping`, `Capture`, `Calibration`, `Results`, or `Nav`. The selected in-viewport page opens six seconds after model load, and the existing screenshot request runs at eight seconds. `Capture` selects the Tracking page; `Nav` shows only the floating navigation. No camera is started by this page-selection hook.
+
+Tracking and Mapping both offer the five-step calibration wizard described in `NativeTracking.md`. It records relaxed/active mouth, smile and eyes, previews five proposed channel ranges, and saves only selected edits. WASD/Shift/Space now accelerate and decelerate smoothly; losing focus stops movement. Torso/arm stationary suppression leaves head, neck, hands and fingers on their existing response path. Existing user profiles are not silently recalibrated.
 
 Imported models and enhancement data are stored under the separate HonkaiVTuber user-data directory. Session data and mapping profiles remain under ignored `Saved/`. Models, reference media, tool binaries and generated outputs are excluded from Git. See `THIRD_PARTY_NOTICES.md` and the native tracking documentation for dependency licenses and local inference isolation.

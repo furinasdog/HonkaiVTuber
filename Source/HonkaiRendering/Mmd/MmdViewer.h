@@ -50,7 +50,9 @@ public:
     void ToggleSpout();
     void UpdateFaceLight();
     void MoveCharacter(FVector Direction, float DeltaSeconds);
+    void StopCharacterMovement() { MovementVelocity = FVector::ZeroVector; }
     FNativeTracking Tracking;
+    FVtuberTrackingSnapshot LastTrackingSnapshot;
     double LastTrackingFrame = 0;
     bool bFaceSeen = false, bPoseSeen = false;
     int32 HandsSeen = 0;
@@ -120,6 +122,7 @@ private:
 	UPROPERTY() TObjectPtr<UMaterialInterface> TranslucentMaterial;
 	UPROPERTY() TObjectPtr<UMaterialInterface> TranslucentTwoSidedMaterial;
 	FVector Target = FVector(0, 0, 80), ModelCenter = FVector(0, 0, 80);
+    FVector MovementVelocity = FVector::ZeroVector;
 	FVector KeyDirection = FVector::ForwardVector;
 	FRotator Rotation = FRotator(-5, 180, 0);
 	float Distance = 350, ModelRadius = 100;
