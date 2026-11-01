@@ -21,7 +21,7 @@ public class HonkaiRendering : ModuleRules
 			"Slate"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "SlateCore", "VRM4U", "VRM4ULoader", "RenderCore", "Json", "ImageWrapper" });
+        PrivateDependencyModuleNames.AddRange(new string[] { "SlateCore", "VRM4U", "VRM4ULoader", "AnimGraphRuntime", "RenderCore", "RHI", "Spout2_DX12", "Json", "ImageWrapper", "HonkaiMotionCapture" });
 		foreach (string Script in new string[] { "Expand-MmdArchive.ps1", "Prepare-MmdEnhancement.ps1", "enhancement-tools.json", "generate_enhancement.py", "bake_face_coordinates.py" })
             RuntimeDependencies.Add("$(ProjectDir)/Scripts/" + Script, StagedFileType.NonUFS);
 		if (Target.Platform == UnrealTargetPlatform.Win64)

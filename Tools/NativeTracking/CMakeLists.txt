@@ -1,0 +1,22 @@
+cmake_minimum_required(VERSION 3.20)
+project(HonkaiNativeTracking LANGUAGES CXX)
+if(NOT WIN32)
+  message(FATAL_ERROR "NativeTracking currently supports Windows only")
+endif()
+add_executable(HonkaiNativeTracking NativeTracking.cpp AppContainer.cpp)
+target_compile_features(HonkaiNativeTracking PRIVATE cxx_std_17)
+target_compile_definitions(HonkaiNativeTracking PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(HonkaiNativeTracking PRIVATE /W4 /EHsc /utf-8)
+target_include_directories(HonkaiNativeTracking PRIVATE ThirdParty/MediaPipe/include)
+set(UE_OPENCV_ROOT "D:/Epic Games/UE_5.8/Engine/Plugins/Runtime/OpenCV" CACHE PATH "Existing UE OpenCV SDK")
+target_include_directories(HonkaiNativeTracking PRIVATE "${UE_OPENCV_ROOT}/Source/ThirdParty/OpenCV/include")
+target_link_directories(HonkaiNativeTracking PRIVATE "${UE_OPENCV_ROOT}/Source/ThirdParty/OpenCV/lib/Win64")
+target_link_libraries(HonkaiNativeTracking PRIVATE opencv_world455 delayimp)
+target_link_options(HonkaiNativeTracking PRIVATE /DELAYLOAD:opencv_world455.dll)
+target_link_libraries(HonkaiNativeTracking PRIVATE mfplat mfreadwrite mfuuid mf ole32 userenv advapi32 OneCoreUAP)
+set_target_properties(HonkaiNativeTracking PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+  RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+enable_testing()
+add_test(NAME native_protocol_math COMMAND HonkaiNativeTracking --self-test)

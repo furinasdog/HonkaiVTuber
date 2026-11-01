@@ -1,4 +1,12 @@
-# HonkaiRendering / 崩坏渲染
+# HonkaiVTuber
+
+从 HonkaiRendering `8ba15b0` 派生的 UE 5.8 原生 C++ VTuber 预览工程。当前包含面部、头部、上半身与手部通道、可编辑响应曲线和不透明 Spout 输出；真人动捕与完整第二阶段尚未验收。原静态查看器保留在独立仓库。
+
+运行说明见 [PHASE2_PREVIEW.md](PHASE2_PREVIEW.md)，本机实际验证与限制见 [PHASE2_VALIDATION.md](PHASE2_VALIDATION.md)，摄像头及推理说明见 [NativeTracking.md](NativeTracking.md)。内置摄像头当前实测接近黑帧、约 1 FPS，停止存在驱动延迟，不能据此宣称真人动作已还原。默认不启动摄像头。
+
+以下保留上游静态查看器说明。派生工程的用户数据根目录改为 `%LOCALAPPDATA%/HonkaiVTuber`。
+
+## HonkaiRendering / 崩坏渲染
 
 基于 UE 5.8 的静态 MMD 角色查看器，研究米哈游角色渲染风格。MMD 读取由 VRM4U 完成；项目开发集中于卡通明暗、色彩、脸部受光、描边和角色展示。
 
@@ -6,9 +14,10 @@ An open-source UE 5.8 MMD character viewer and Honkai-inspired toon-rendering st
 
 ## 使用
 
-默认画面仅显示角色与背景。将包含 PMX 和贴图的 ZIP 拖入窗口，在画面内选择 PMX。按 Esc 打开或关闭视口内菜单，遮罩与菜单用 0.18 秒淡入淡出，不创建独立窗口；“模型”子菜单提供 ZIP 导入，“视角”子菜单提供聚焦、投影切换和操作说明。菜单打开及淡出期间阻止镜头操作。文件导入失败会给出可关闭的提示，已加载模型会保留。
+默认只显示角色与 Blender 中性灰背景。将包含 PMX 和贴图的 ZIP 拖入窗口，在画面内选择 PMX。按 H 或 Esc 显示左上角可拖动、可收起的浮动导航，分为“模型、捕捉、映射、画面、场景、应用”六组；子页在同一视口内浮动，不创建独立窗口。H 隐藏或恢复导航与子页；Esc 关闭当前子页，再按 Esc 隐藏或恢复导航。普通子页的空白区域仍可操控视角，选择 PMX 与加载状态页会阻止误操作。文件导入失败会给出可关闭的提示，已加载模型会保留。
 
-- 中键拖动：旋转；Shift + 中键：平移；Ctrl + 中键或滚轮：缩放。
+- 中键拖动：绕模型旋转，水平方向跟随拖动；Shift + 中键：平移；Ctrl + 中键或滚轮：缩放。
+- WASD：水平移动角色；Shift：上移角色；Space：下移角色。
 - 小键盘 1 / 3 / 7：正面 / 右侧 / 顶部；Ctrl 配合为反向视图。
 - 小键盘 5：正交 / 透视；小键盘小数点或 Home：聚焦。
 
@@ -88,6 +97,8 @@ python -m py_compile Scripts/setup_viewer.py Scripts/test_archive.py Scripts/com
 -MmdArchive="完整 ZIP 路径" -MmdModel="包内 PMX 相对路径" -MmdCapture="截图完整路径.png" -MmdTestExit
 ```
 
+仅在开发构建中，可同时添加 `-MmdCapturePage=Mapping`、`Capture` 或 `Nav`：模型加载后第 6 秒显示映射页、捕捉页或浮动导航，第 8 秒按上述参数截图；此参数不会启动摄像头。
+
 可追加 `-MmdLightYaw=65` 改变光向、`-MmdViewYaw=135` 改变拍摄方向；两者作用于整个场景，不使用模型预设。PowerShell 中使用带引号的 `'-MmdFrameScale=0.22' '-MmdTargetHeight=1.72'` 生成近景，避免小数参数被拆开；默认值均为 1，分别相对聚焦距离和模型中心高度。
 
 首次着色器编译结束前的画面不适合作为效果判断。更多检查与提交规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。
@@ -121,3 +132,10 @@ python Scripts/compare_renders.py local-manifest.json Saved/Comparisons/comparis
 - [崩铁角色渲染学习笔记](https://zhuanlan.zhihu.com/p/711037262)
 - [崩坏3卡通渲染实现方式拆解](https://zhuanlan.zhihu.com/p/120908528)
 - [原神三渲二学习笔记](https://zhuanlan.zhihu.com/p/699682089)
+
+
+## 动捕与 PMX 物理准备
+
+两个项目共用独立的 [HonkaiMotionCapture](https://github.com/furinasdog/HonkaiMotionCapture) 插件。初始化 submodule 后，用插件的 `Scripts/Stage-LocalRuntime.ps1` 按哈希准备本地 SDK DLL 和三种模型。默认在 UE 进程内后台识别，不运行单独 EXE，也不通过 JSON 文件交换快照。它目前使用动态 SDK；静态 SDK 构建未实现。旧 EXE 只作为准备失败时明确报告的回退。SDK 预编译包包含 usage telemetry，进程内模式不具备旧 AppContainer 的网络隔离，详见插件说明。
+
+运行 `Scripts/Prepare-PmxPhysics.ps1` 后再编译 UE，以启用原 PMX 刚体、关节和碰撞组的 Bullet 物理；参见 [PHYSICS.md](PHYSICS.md)。没有这些物理数据的模型不会自动得到布料或头发求解。用户模型、参考图、视频、SDK 二进制、模型权重和本地验收证据均不进入源码仓库。

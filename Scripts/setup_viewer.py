@@ -31,6 +31,7 @@ def material(name, translucent=False, outline=False, backdrop=False, two_sided=F
     m.set_editor_property("opacity_mask_clip_value", 0.1)
     if not backdrop:
         lib.set_base_material_usage(m, u.MaterialUsage.MATUSAGE_SKELETAL_MESH)
+        lib.set_base_material_usage(m, u.MaterialUsage.MATUSAGE_MORPH_TARGETS)
 
     def node(cls, **props):
         n = lib.create_material_expression(m, cls)
@@ -38,7 +39,7 @@ def material(name, translucent=False, outline=False, backdrop=False, two_sided=F
             n.set_editor_property(k, v)
         return n
 
-    tint = node(u.MaterialExpressionVectorParameter, parameter_name="Tint", default_value=u.LinearColor(0.12, 0.16, 0.21, 1) if backdrop else u.LinearColor(1, 1, 1, 1))
+    tint = node(u.MaterialExpressionVectorParameter, parameter_name="Tint", default_value=u.LinearColor(0.046665, 0.046665, 0.046665, 1) if backdrop else u.LinearColor(1, 1, 1, 1))
     if backdrop:
         output(tint, "RGB", u.MaterialProperty.MP_EMISSIVE_COLOR)
     else:
@@ -59,9 +60,9 @@ def material(name, translucent=False, outline=False, backdrop=False, two_sided=F
                 connect(face_map, "RGB", face_mask, "")
             surface_tint = node(u.MaterialExpressionVectorParameter, parameter_name="SurfaceTint", default_value=u.LinearColor(1, 1, 1, 1))
             ink = node(u.MaterialExpressionCustom, output_type=u.CustomMaterialOutputType.CMOT_FLOAT3,
-                       code="float3 inkColor = lerp(Base * SurfaceTint * float3(0.18, 0.065, 0.045), Ink, 0.25); return lerp(lerp(Base * SurfaceTint, inkColor, 0.55), inkColor, FaceMask);" if face_outline else "return max(Ink, Base * float3(0.14, 0.10, 0.12));")
+                       code="float3 inkColor = lerp(Base * SurfaceTint * float3(0.18, 0.065, 0.045), Ink, 0.25); return lerp(lerp(Base * SurfaceTint, inkColor, 0.55), inkColor, FaceMask);" if face_outline else "float3 authored = saturate(Ink); if (Region > 1.5) return authored * 0.75; if (Region > 0.5) return pow(authored, 1.3) * float3(0.20, 0.13, 0.11); return authored * 0.18;")
             ink_inputs = []
-            for input_name in ("Ink", "Base", "SurfaceTint", "FaceMask"):
+            for input_name in ("Ink", "Base", "SurfaceTint", "FaceMask", "Region"):
                 i = u.CustomInput()
                 i.set_editor_property("input_name", input_name)
                 ink_inputs.append(i)
@@ -70,6 +71,8 @@ def material(name, translucent=False, outline=False, backdrop=False, two_sided=F
             connect(texture, "RGB", ink, "Base")
             connect(surface_tint, "RGB", ink, "SurfaceTint")
             connect(face_mask, "", ink, "FaceMask")
+            region = node(u.MaterialExpressionScalarParameter, parameter_name="OutlineRegion", default_value=0)
+            connect(region, "", ink, "Region")
             output(ink, "", u.MaterialProperty.MP_EMISSIVE_COLOR)
             normal = node(u.MaterialExpressionVertexNormalWS)
             width = node(u.MaterialExpressionScalarParameter, parameter_name="OutlineWidth", default_value=0.12)
@@ -229,35 +232,40 @@ def cel_lighting():
     u.log("MMD_MATERIAL_CHECK M_CelLighting before_dof=true")
 
 
-material("M_Toon")
-material("M_ToonTwoSided", two_sided=True)
-material("M_ToonTranslucent", translucent=True)
-material("M_ToonTranslucentTwoSided", translucent=True, two_sided=True)
-material("M_Outline", outline=True)
-material("M_FaceOutline", outline=True, face_outline=True)
-cel_lighting()
-background = u.load_asset(ROOT + "/M_Backdrop") if u.EditorAssetLibrary.does_asset_exist(ROOT + "/M_Backdrop") else material("M_Backdrop", backdrop=True)
+def main():
+    material("M_Toon")
+    material("M_ToonTwoSided", two_sided=True)
+    material("M_ToonTranslucent", translucent=True)
+    material("M_ToonTranslucentTwoSided", translucent=True, two_sided=True)
+    material("M_Outline", outline=True)
+    material("M_FaceOutline", outline=True, face_outline=True)
+    cel_lighting()
+    background = material("M_Backdrop", backdrop=True)
 
-level_path = ROOT + "/L_Viewer"
-levels = u.get_editor_subsystem(u.LevelEditorSubsystem)
-if not u.EditorAssetLibrary.does_asset_exist(level_path):
-    assert levels.new_level(level_path)
-    actors = u.get_editor_subsystem(u.EditorActorSubsystem)
-    sphere = actors.spawn_actor_from_class(u.StaticMeshActor, u.Vector(0, 0, 0))
-    sphere.set_actor_label("Studio backdrop")
-    comp = sphere.static_mesh_component
-    comp.set_static_mesh(u.load_asset("/Engine/BasicShapes/Sphere"))
-    comp.set_material(0, background)
-    comp.set_collision_enabled(u.CollisionEnabled.NO_COLLISION)
-    comp.set_cast_shadow(False)
-    sphere.set_actor_scale3d(u.Vector(500, 500, 500))
-    levels.save_current_level()
-else:
-    assert levels.load_level(level_path)
-    for actor in u.get_editor_subsystem(u.EditorActorSubsystem).get_all_level_actors():
-        if isinstance(actor, u.StaticMeshActor):
-            comp = actor.static_mesh_component
-            if comp.get_material(0) == background:
-                comp.set_cast_shadow(False)
-    assert levels.save_current_level()
-u.log("MMD_VIEWER_SETUP_COMPLETE")
+    level_path = ROOT + "/L_Viewer"
+    levels = u.get_editor_subsystem(u.LevelEditorSubsystem)
+    if not u.EditorAssetLibrary.does_asset_exist(level_path):
+        assert levels.new_level(level_path)
+        actors = u.get_editor_subsystem(u.EditorActorSubsystem)
+        sphere = actors.spawn_actor_from_class(u.StaticMeshActor, u.Vector(0, 0, 0))
+        sphere.set_actor_label("Studio backdrop")
+        comp = sphere.static_mesh_component
+        comp.set_static_mesh(u.load_asset("/Engine/BasicShapes/Sphere"))
+        comp.set_material(0, background)
+        comp.set_collision_enabled(u.CollisionEnabled.NO_COLLISION)
+        comp.set_cast_shadow(False)
+        sphere.set_actor_scale3d(u.Vector(500, 500, 500))
+        levels.save_current_level()
+    else:
+        assert levels.load_level(level_path)
+        for actor in u.get_editor_subsystem(u.EditorActorSubsystem).get_all_level_actors():
+            if isinstance(actor, u.StaticMeshActor):
+                comp = actor.static_mesh_component
+                if comp.get_material(0) == background:
+                    comp.set_cast_shadow(False)
+        assert levels.save_current_level()
+    u.log("MMD_VIEWER_SETUP_COMPLETE")
+
+
+if __name__ == "__main__":
+    main()

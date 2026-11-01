@@ -5,6 +5,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "Camera/CameraActor.h"
 #include "MmdEnhancement.h"
+#include "Vtuber/NativeTracking.h"
 #include "MmdViewer.generated.h"
 
 class UVrmAssetListObject;
@@ -13,6 +14,8 @@ class UMaterialInstanceDynamic;
 class SMmdViewer;
 class USkeletalMeshComponent;
 class UTexture2D;
+class USkinnedMeshComponent;
+class UVtuberOutput;
 
 UCLASS()
 class AMmdViewerController : public APlayerController
@@ -41,6 +44,22 @@ public:
     void SetBackground(int32 Preset);
     void SetRenderScale(int32 Percent);
     void SetEnhancementResolution(int32 Resolution);
+    void ToggleTracking();
+    FString TrackingSummary();
+    void RecordTrackingFrame(const FVtuberTrackingSnapshot& Snapshot);
+    void ToggleSpout();
+    void UpdateFaceLight();
+    void MoveCharacter(FVector Direction, float DeltaSeconds);
+    FNativeTracking Tracking;
+    double LastTrackingFrame = 0;
+    bool bFaceSeen = false, bPoseSeen = false;
+    int32 HandsSeen = 0;
+#if WITH_DEV_AUTOMATION_TESTS
+    FVtuberTrackingSnapshot ReplaySnapshot;
+    bool bTrackingReplay = false;
+#endif
+    UPROPERTY() TObjectPtr<UVtuberRigComponent> Rig;
+    UPROPERTY() TObjectPtr<UVtuberOutput> Output;
     bool HasModel() const { return LoadedAsset != nullptr; }
     bool HasEnhancement() const { return !EnhancedFaceMaps.IsEmpty(); }
     bool IsEnhanced() const { return bEnhanced; }
@@ -69,13 +88,14 @@ private:
     FMmdModelState ModelState;
     FMmdEnhancementRequest GenerationRequest;
     bool bGenerationPending = false;
+    bool bHudVisibleBeforeImport = false;
     FString LoadedModelPath;
     FString EnhancementNotice;
     FString LoadedResourceRoot;
     bool bEnhanced = false;
     int32 PreviewMaterialIndex = INDEX_NONE;
     UPROPERTY() TObjectPtr<USkeletalMeshComponent> ModelMesh;
-    UPROPERTY() TObjectPtr<USkeletalMeshComponent> OutlineMesh;
+    UPROPERTY() TObjectPtr<USkinnedMeshComponent> OutlineMesh;
     UPROPERTY() TArray<TObjectPtr<UMaterialInstanceDynamic>> SurfaceMaterials;
     UPROPERTY() TArray<TObjectPtr<UMaterialInstanceDynamic>> OriginalOutlines;
     UPROPERTY() TArray<TObjectPtr<UMaterialInstanceDynamic>> EnhancedOutlines;

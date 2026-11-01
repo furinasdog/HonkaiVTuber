@@ -90,3 +90,38 @@ This remains a toon-rendering study. The reference still differs in hair shadow 
 Only static bind poses are supported. Animated heads would need bone-relative light axes. Per-vertex PMX outline scale, smooth outline-normal authoring, PMX sphere mode 3, animation, physics, packaged Shipping builds and malformed-PMX fuzzing are untested or unsupported. Import remains synchronous on the game thread after ZIP extraction.
 
 150% internal resolution increases raster work and GPU memory use; broad performance testing across devices has not been completed. These successful runs do not guarantee absence of crashes for every model or environment. Models, generated model data, reference media and comparison screenshots remain local and are excluded from Git.
+
+# Local rework validation — 2026-11-01
+
+These are development/editor results on UE 5.8.4, Windows x64 and MSVC 14.44. They do not establish packaged-release readiness or official visual fidelity. Earlier phase-two records describe earlier implementations; this record covers the new in-process capture, shared UI and PMX Bullet path.
+
+## Changes and checks
+
+- The default capture backend is the separate HonkaiMotionCapture plugin, running a worker thread inside UE and dynamically loading the pinned MediaPipe SDK. Engine tests cover in-memory frame transfer, face/body basis conversion and whole-frame mirroring. A static-image native SDK fixture covers face, pose and both hands. The new backend has not been tested with a real person/camera in this rework. The SDK is dynamic, not statically linked.
+- The game engine constructs a separate scene viewport texture before the native window viewport is created. This addresses the observed Tonemap copy into a minimized 8×8 backbuffer. A real output-enabled window was minimized/restored and maximized/restored; an independent Spout receiver verified opaque 1280×720 pixel frames before/after. These bounded checks do not guarantee indefinite runtime stability.
+- Shared native Slate styles cover input fields, buttons, checkboxes, sliders, spin boxes and selection rows. The tracking panel was visually checked in a GPU viewport with the camera off. Floating in-viewport panels and H visibility remain available.
+- PMX physics preserves the existing importer's raw data. Generic bone-name normalization now includes rigid-body references. Current-world Bullet snapshots remove the Mode2 feedback time mismatch. The original native API remains compatible.
+- Actual model loads include March 7th, Phainon and Sparkle. Runtime bone-pose probes confirm physics, rather than only static collision metadata. No per-character solver settings, PMX edits or collision disabling are used.
+
+## Four-model native physics audit
+
+Each model runs 10 seconds static, 15 seconds moving and 20 seconds varying frame intervals, including two long-frame resets and one explicit reset. All outputs remain finite and reset error is zero. Joint residuals are measured in world space; the diagnostic target is max 5 cm / P95 1 cm.
+
+| Model | Rigid bodies / joints | Static max / P95 (cm) | Moving max / P95 (cm) | Result |
+| --- | --- | --- | --- | --- |
+| March 7th | 269 / 389 | 2.164 / 0.369 | 3.145 / 0.714 | Target met |
+| Sparkle | 290 / 366 | 1.775 / 0.193 | 4.315 / 0.610 | Target met |
+| Senti | 340 / 528 | 2.546 / 0.606 | 2.638 / 0.733 | Target met |
+| Phainon | 297 / 454 | 9.984 / 1.018 | 11.000 / 0.638 | Failed |
+
+Phainon's cape still visibly oscillates. Cross-chain fully locked joints are reopened by the Mode2 post-solve bone-position projection. Rest frames close correctly; this evidence does not show a damaged source model. Testing 20/40/80/100 solver iterations does not provide a reliable common setting: improvements for Phainon regress March 7th. Those diagnostic settings were not shipped. A joint-stage solution requires further investigation.
+
+## Rendering comparison
+
+The existing Blender 5.0 / MMD Tools 4.5.3 enhancement pipeline generated 1024×1024 face controls for Phainon and Sparkle. Identical-camera GPU captures with enhancement off/on show that the large nose/lip normal-shadow patches disappear with the face controls. The official reference comparison still shows differences in nose-shadow shape, skin color, hair shadows and outline weight. Generated controls are an approximation, not official SDF/LightMap assets.
+
+Generic outline roles are inferred from material names; gloves/clothes take precedence over skin aliases. Hair, skin and other surfaces use separate treatments, preserving the face/nose outline path. Unknown names use the default role. Role assertions do not replace visual checks on each model.
+
+Private models, reference images, camera fixtures and derived reports/captures remain under ignored local data directories. Portable enhancement copies retain the original PMX bytes and are not published in this repository. See PHYSICS.md and the plugin README for preparation, supported constraints and licensing.
+
+Final engine automation: 27 tests per project (26 successes and one success with the expected incompatible-profile warning), zero failures and zero tests not run. Reports remain local under Saved/Tests/MultiModelAcceptedFinal. Native UMT WorldSnapshot CTest passes independently. Both editor targets compile successfully. These unit checks do not override the failed Phainon cape audit.

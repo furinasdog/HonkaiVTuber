@@ -38,3 +38,5 @@ __pycache__/
 # Plugins are managed as explicit submodules.
 /Plugins/*
 !/Plugins/VRM4U/
+!/Plugins/Spout2_DX12/
+!/Plugins/HonkaiMotionCapture/

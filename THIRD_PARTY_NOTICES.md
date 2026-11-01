@@ -1,5 +1,17 @@
 # Third-party notices
 
+## HonkaiRender Godot implementation
+
+The motion retargeting, channel-response behavior and floating-panel interaction are adapted from [Honkai-Style-RealTime-Rendering](https://github.com/furinasdog/Honkai-Style-RealTime-Rendering), commit `a87e7d3cc5071ca867b4090ef3bb7a19a03a7652`, copyright (c) 2026 furinasdog, under MIT. The original copyright and MIT permission notice are retained by this project's LICENSE. Rendering and model importing continue to use this project's Unreal Engine pipeline.
+
+## Spout2
+
+`Plugins/Spout2_DX12` pins [GPUbrainStorm/UE5_Spout2_DX12](https://github.com/GPUbrainStorm/UE5_Spout2_DX12) v2.1.1, commit `145e71c53a2a8fc5c6e82dda0994520bba8eef65`, under MIT. Its bundled [Spout2 SDK](https://github.com/leadedge/Spout2) retains its BSD-2-Clause notices. Preserve both sets of notices when distributing.
+
+## MediaPipe native tasks
+
+The default tracker is the independently maintained [HonkaiMotionCapture](https://github.com/furinasdog/HonkaiMotionCapture) MIT plugin, linked as a pinned submodule. It loads the official MediaPipe 0.10.35 C API DLL inside the UE process and uses UE's OpenCV module. SDK/model binaries remain outside Git and are staged only after hash verification. MediaPipe and OpenCV retain their Apache-2.0 and third-party notices in the plugin. The prebuilt SDK includes usage telemetry; this in-process backend does not provide AppContainer network isolation. The old native EXE/AppContainer implementation remains a clearly reported fallback when the integrated backend cannot be prepared; its historical measurements do not validate the new backend. No new image-upload interface is added by the plugin.
+
 ## VRM4U
 
 MMD import uses [VRM4U](https://github.com/ruyo/VRM4U), copyright Haruyoshi Yamamoto, under its MIT license. The project uses [the HonkaiRendering fork](https://github.com/furinasdog/VRM4U) as the `Plugins/VRM4U` Git submodule. The main repository pins the precise fork commit rather than an unversioned download.
@@ -23,3 +35,8 @@ Existing template files under `Source/HonkaiRendering` retain their Epic Games c
 ## Reference media
 
 User-provided MMD models, textures, game screenshots and illustrations are separate local reference assets. They are excluded from this repository, CI and cooked application; their original usage terms apply. The repository does not grant redistribution rights to miHoYo/HoYoverse content or third-party models.
+
+
+## PMX Bullet runtime
+
+`Tools/UMTNativePlugin` pins [our compatible UMTNativePlugin fork](https://github.com/furinasdog/UMTNativePlugin/tree/honkai-rendering/current-world-snapshot) at `664923d14325448ae8111d653cab9bed83f5d736`, based on upstream `cf0d4c857044e29ba9ee90c915577707ecbeae3a`. It adds a current-world transform snapshot and regression while retaining the original interpolated API. Its MIT license and Candidum Games copyright remain in that submodule. It bundles Bullet 2.75 under its original zlib license; see `ThirdParty/Bullet-LICENSE.txt`. The project adds an adapter to the existing PMX importer rather than replacing PMX parsing. The native archive is built locally and excluded from Git. See `PHYSICS.md` for preparation and supported constraints.

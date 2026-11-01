@@ -1,7 +1,9 @@
 #include "MmdViewer.h"
+#include "MmdUiStyle.h"
 #include "Async/Async.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
+#include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "EngineUtils.h"
@@ -31,11 +33,17 @@
 #include "HAL/PlatformProcess.h"
 #include "LoaderBPFunctionLibrary.h"
 #include "VrmAssetListObject.h"
+#include "VrmPmxPhysicsData.h"
+#include "VrmPoseableMeshComponent.h"
+#include "Vtuber/VtuberOutput.h"
+#include "Vtuber/SVtuberRigPanel.h"
+#include "Widgets/Input/SNumericEntryBox.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/SCanvas.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SOverlay.h"
 #include "Animation/CurveSequence.h"
@@ -44,6 +52,8 @@
 #endif
 #include "Input/DragAndDrop.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Notifications/SProgressBar.h"
 #include "Brushes/SlateColorBrush.h"
 #include "Widgets/Text/STextBlock.h"
@@ -58,7 +68,23 @@ THIRD_PARTY_INCLUDES_END
 
 namespace
 {
-	FLinearColor Panel(0.92f, 0.935f, 0.95f, 1), Text(0.035f, 0.045f, 0.060f, 1), Muted(0.16f, 0.19f, 0.23f, 1);
+	FLinearColor Panel(1, 1, 1, 1), Text = FLinearColor::FromSRGBColor(FColor(32, 41, 56)),
+        Muted = FLinearColor::FromSRGBColor(FColor(102, 117, 138));
+
+    float OutlineRegion(const FString& MaterialName)
+    {
+        const FString Name = MaterialName.ToLower();
+        for (const TCHAR* Word : {TEXT("hair"), TEXT("髪"), TEXT("髮"), TEXT("头发")})
+            if (Name.Contains(Word)) return 2.f;
+        // Material vocabulary is shared across models; clothing takes precedence over body-part words.
+        for (const TCHAR* Word : {TEXT("glove"), TEXT("sleeve"), TEXT("accessory"), TEXT("sock"), TEXT("shoe"),
+            TEXT("衣"), TEXT("袖"), TEXT("饰"), TEXT("飾"), TEXT("套"), TEXT("环"), TEXT("環"), TEXT("袋"), TEXT("靴"), TEXT("袜")})
+            if (Name.Contains(Word)) return 0.f;
+        for (const TCHAR* Word : {TEXT("skin"), TEXT("face"), TEXT("neck"), TEXT("hand"), TEXT("肌"), TEXT("皮肤"),
+            TEXT("顔"), TEXT("脸"), TEXT("脖"), TEXT("首"), TEXT("手"), TEXT("腿"), TEXT("足")})
+            if (Name.Contains(Word)) return 1.f;
+        return 0.f;
+    }
 
     bool CopyToonRamp(UTexture2D* Texture, TArray<FColor>& Pixels, int32 Row)
     {
@@ -190,22 +216,79 @@ namespace
 
 }
 
+struct FMmdMenuSetup
+{
+    FString Title;
+    TFunction<void()> Escape, ToggleHud;
+    TFunction<void(FVector2D)> Move;
+    TFunction<void()> Collapse;
+    TSharedRef<SWidget> Content;
+};
+
 class SMmdMenu : public SCompoundWidget
 {
 public:
     SLATE_BEGIN_ARGS(SMmdMenu) {} SLATE_END_ARGS()
     TFunction<void()> Escape;
-    void Construct(const FArguments&, TFunction<void()> InEscape, TSharedRef<SWidget> Content)
+    TFunction<void()> ToggleHud;
+    TFunction<void(FVector2D)> Move;
+    TFunction<void()> Collapse;
+    FButtonStyle HeaderButtonStyle;
+    bool bCollapsed = false, bMoving = false;
+    void Construct(const FArguments&, FMmdMenuSetup In)
     {
-        Escape = MoveTemp(InEscape);
-        ChildSlot[Content];
+        Escape = MoveTemp(In.Escape);
+        ToggleHud = MoveTemp(In.ToggleHud);
+        Move = MoveTemp(In.Move);
+        Collapse = MoveTemp(In.Collapse);
+        HeaderButtonStyle = FMmdUiStyle::Get().Button;
+        TSharedRef<SHorizontalBox> Header = SNew(SHorizontalBox);
+        Header->AddSlot().FillWidth(1).VAlign(VAlign_Center)[Label(In.Title, 13)];
+        if (Collapse)
+            Header->AddSlot().AutoWidth()[SNew(SButton).ButtonStyle(&HeaderButtonStyle).ContentPadding(FMargin(5, 4))
+                .OnClicked_Lambda([this] { bCollapsed = !bCollapsed; Collapse(); return FReply::Handled(); })
+                [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(bCollapsed ? TEXT("展开") : TEXT("收起")); }).ColorAndOpacity(Text).Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))]];
+        Header->AddSlot().AutoWidth().Padding(6, 0, 0, 0)
+            [SNew(SButton).ButtonStyle(&HeaderButtonStyle).ContentPadding(FMargin(5, 4))
+                .OnClicked_Lambda([this] { Escape(); return FReply::Handled(); })[Label(TEXT("关闭"), 11)]];
+        ChildSlot[SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(Panel).Padding(0)
+            [SNew(SVerticalBox)
+                + SVerticalBox::Slot().AutoHeight()
+                    [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                        .BorderBackgroundColor(FLinearColor(.956f, .965f, .980f)).Padding(FMargin(14, 8))[Header]]
+                + SVerticalBox::Slot().FillHeight(1)
+                    [SNew(SBox).Visibility_Lambda([this] { return bCollapsed ? EVisibility::Collapsed : EVisibility::Visible; })[In.Content]]]];
     }
     virtual bool SupportsKeyboardFocus() const override { return true; }
     virtual FReply OnKeyDown(const FGeometry&, const FKeyEvent& Event) override
     {
         if (Event.GetKey() == EKeys::Escape) { Escape(); return FReply::Handled(); }
+        if (Event.GetKey() == EKeys::H) { ToggleHud(); return FReply::Handled(); }
         return FReply::Unhandled();
     }
+    virtual FReply OnMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& Event) override
+    {
+        if (Event.GetEffectingButton() == EKeys::LeftMouseButton && Geometry.AbsoluteToLocal(Event.GetScreenSpacePosition()).Y < 44)
+        { bMoving = true; return FReply::Handled().CaptureMouse(SharedThis(this)); }
+        return FReply::Handled();
+    }
+    virtual FReply OnMouseMove(const FGeometry& Geometry, const FPointerEvent& Event) override
+    {
+        if (bMoving)
+        {
+            Move(Geometry.AbsoluteToLocal(Event.GetScreenSpacePosition())
+                - Geometry.AbsoluteToLocal(Event.GetLastScreenSpacePosition()));
+            return FReply::Handled();
+        }
+        return FReply::Unhandled();
+    }
+    virtual FReply OnMouseButtonUp(const FGeometry&, const FPointerEvent& Event) override
+    {
+        if (bMoving && Event.GetEffectingButton() == EKeys::LeftMouseButton)
+        { bMoving = false; return FReply::Handled().ReleaseMouseCapture(); }
+        return FReply::Unhandled();
+    }
+    virtual void OnMouseCaptureLost(const FCaptureLostEvent&) override { bMoving = false; }
 };
 
 class SMmdViewer : public SCompoundWidget
@@ -214,20 +297,73 @@ public:
     SLATE_BEGIN_ARGS(SMmdViewer) {} SLATE_END_ARGS()
     TWeakObjectPtr<AMmdViewerController> Controller;
     TSharedPtr<SBorder> MenuLayer;
+    TSharedPtr<SBox> PageHost;
+    TSharedPtr<SVtuberRigPanel> MappingPanel;
     FCurveSequence MenuFade{0.f, 0.18f, ECurveEaseFunction::QuadInOut};
-    bool bMenuOpen = false;
+    FVector2D NavigationPosition{20, 20}, PagePosition{360, 40}, PageSize{560, 520};
+    bool bMenuOpen = false, bHudVisible = false, bNavigationCollapsed = false;
     bool bDragging = false;
+    TSet<FKey> PlacementKeys;
     FName CurrentPage = "Main";
     FButtonStyle ButtonStyle;
+    FButtonStyle PrimaryButtonStyle;
+    TArray<TSharedPtr<FIntPoint>> TrackingResolutions;
 
     void Construct(const FArguments&, AMmdViewerController* InController)
     {
         Controller = InController;
-        ButtonStyle = FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("Button");
-        ButtonStyle.SetNormal(FSlateColorBrush(FLinearColor(.79f, .82f, .85f)));
-        ButtonStyle.SetHovered(FSlateColorBrush(FLinearColor(.69f, .75f, .80f)));
-        ButtonStyle.SetPressed(FSlateColorBrush(FLinearColor(.60f, .68f, .75f)));
-        ButtonStyle.SetDisabled(FSlateColorBrush(FLinearColor(.84f, .85f, .86f)));
+        ButtonStyle = FMmdUiStyle::Get().Button;
+        PrimaryButtonStyle = FMmdUiStyle::Get().Primary;
+        TrackingResolutions = {MakeShared<FIntPoint>(640, 480), MakeShared<FIntPoint>(1280, 720)};
+        TSharedRef<SVerticalBox> Navigation = SNew(SVerticalBox);
+        const TCHAR* NavigationNames[] = {TEXT("模型"), TEXT("捕捉"), TEXT("映射"), TEXT("画面"), TEXT("场景"), TEXT("应用")};
+        const FName NavigationPages[] = {"Model", "Tracking", "Mapping", "Graphics", "Scene", "Application"};
+        for (int32 Row = 0; Row < 2; ++Row)
+        {
+            TSharedRef<SHorizontalBox> Buttons = SNew(SHorizontalBox);
+            for (int32 Column = 0; Column < 3; ++Column)
+            {
+                const int32 Index = Row * 3 + Column;
+                Buttons->AddSlot().FillWidth(1).Padding(3)
+                    [Button(NavigationNames[Index], [this, Page = NavigationPages[Index]] { OpenPage(Page); })];
+            }
+            Navigation->AddSlot().AutoHeight()[Buttons];
+        }
+        Navigation->AddSlot().AutoHeight().Padding(3, 8, 3, 4)
+            [SNew(SHorizontalBox)
+                + SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 4, 0)
+                    [SNew(SButton).ButtonStyle(&PrimaryButtonStyle).ContentPadding(FMargin(8, 7))
+                        .IsEnabled_Lambda([this] { return Controller.IsValid() && Controller->Rig && !Controller->bBusy
+                            && !Controller->Tracking.IsRunning() && !Controller->Tracking.IsStopping(); })
+                        .OnClicked_Lambda([this] { Controller->ToggleTracking(); return FReply::Handled(); })
+                        [SNew(STextBlock).Text(FText::FromString(TEXT("启动捕捉"))).ColorAndOpacity(FSlateColor::UseForeground())
+                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))]]
+                + SHorizontalBox::Slot().FillWidth(1)
+                    [SNew(SButton).ButtonStyle(&ButtonStyle).ContentPadding(FMargin(8, 7))
+                        .IsEnabled_Lambda([this] { return Controller.IsValid() && Controller->Tracking.IsRunning() && !Controller->Tracking.IsStopping(); })
+                        .OnClicked_Lambda([this] { Controller->ToggleTracking(); return FReply::Handled(); })
+                        [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller.IsValid() && Controller->Tracking.IsStopping()
+                            ? TEXT("正在停止…") : TEXT("停止")); }).ColorAndOpacity(FSlateColor::UseForeground())
+                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))]]];
+        Navigation->AddSlot().AutoHeight().Padding(3, 8, 3, 0)
+            [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller.IsValid() ? Controller->ModelName : FString()); })
+                .ColorAndOpacity(Text).AutoWrapText(true)];
+        Navigation->AddSlot().AutoHeight().Padding(3, 4)
+            [SNew(STextBlock).Text_Lambda([this]
+                { return FText::FromString(Controller.IsValid() ? Controller->Tracking.Status + TEXT("\n") + Controller->TrackingSummary() : FString()); })
+                .ColorAndOpacity(Muted).AutoWrapText(true)];
+        Navigation->AddSlot().AutoHeight().Padding(3, 0, 3, 4)
+            [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller.IsValid()
+                ? FString::Printf(TEXT("动捕 %.1f FPS"), Controller->Tracking.InferenceFps) : FString()); })
+                .ColorAndOpacity(Muted)];
+        TWeakPtr<SMmdViewer> Weak = SharedThis(this);
+        FMmdMenuSetup NavigationSetup{FString(TEXT("Honkai Render")),
+            [Weak] { if (auto Self = Weak.Pin()) Self->ToggleHud(); },
+            [Weak] { if (auto Self = Weak.Pin()) Self->ToggleHud(); },
+            [Weak](FVector2D Delta) { if (auto Self = Weak.Pin()) Self->MovePanel(Self->NavigationPosition, Delta, FVector2D(320, Self->bNavigationCollapsed ? 44 : 300)); },
+            [Weak] { if (auto Self = Weak.Pin()) Self->bNavigationCollapsed = !Self->bNavigationCollapsed; },
+            SNew(SBorder).Padding(12)[Navigation]};
+        TSharedRef<SMmdMenu> NavigationWindow = SNew(SMmdMenu, NavigationSetup);
         ChildSlot
         [
             SNew(SOverlay)
@@ -236,28 +372,72 @@ public:
                 .BorderBackgroundColor(FLinearColor::Transparent)]
             + SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Bottom).Padding(24)
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(Panel).Padding(16)
-                .Visibility_Lambda([this] { return Controller.IsValid() && Controller->IsGenerating() && !IsMenuBlocking() ? EVisibility::HitTestInvisible : EVisibility::Collapsed; })
+                .Visibility_Lambda([this] { return bHudVisible && Controller.IsValid() && Controller->IsGenerating() && !bMenuOpen ? EVisibility::HitTestInvisible : EVisibility::Collapsed; })
                 [SNew(SBox).WidthOverride(320)[SNew(STextBlock).ColorAndOpacity(Text).AutoWrapText(true)
                     .Text_Lambda([this] { return FText::FromString(Controller.IsValid() ? Controller->GenerationText() + TEXT("\nEsc 查看进度或取消") : FString()); })]]]
             + SOverlay::Slot()
             [SAssignNew(MenuLayer, SBorder)
                 .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-                .BorderBackgroundColor(FLinearColor(0.008f, 0.012f, 0.02f, 0.66f))
-                .HAlign(HAlign_Center).VAlign(VAlign_Center).Padding(24)
+                .BorderBackgroundColor(FLinearColor::Transparent).Padding(0)
                 .Visibility(EVisibility::Collapsed)
-                .IsEnabled_Lambda([this] { return bMenuOpen; })]
+                [SNew(SCanvas)
+                    + SCanvas::Slot().Position_Lambda([this] { return NavigationPosition; })
+                        .Size_Lambda([this] { return FVector2D(320, bNavigationCollapsed ? 44 : 300); })[NavigationWindow]
+                    + SCanvas::Slot().Position_Lambda([this] { return PagePosition; })
+                        .Size_Lambda([this] { return PageSize; })
+                        [SAssignNew(PageHost, SBox).Visibility_Lambda([this]
+                            { return bHudVisible && (bMenuOpen || !MenuFade.IsAtStart()) ? EVisibility::Visible : EVisibility::Collapsed; })
+                            .IsEnabled_Lambda([this] { return bMenuOpen; })]]]
         ];
     }
     virtual void Tick(const FGeometry& Geometry, double Time, float Delta) override
     {
         SCompoundWidget::Tick(Geometry, Time, Delta);
-        MenuLayer->SetRenderOpacity(MenuFade.GetLerp());
-        MenuLayer->SetVisibility(IsMenuBlocking() ? EVisibility::Visible : EVisibility::Collapsed);
+        PageHost->SetRenderOpacity(MenuFade.GetLerp());
+        MenuLayer->SetVisibility(bHudVisible ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed);
+        if (!IsMenuBlocking() && !bDragging && Controller.IsValid())
+        {
+            FVector Movement(0, 0, 0);
+            Movement.X = float(PlacementKeys.Contains(EKeys::W)) - float(PlacementKeys.Contains(EKeys::S));
+            Movement.Y = float(PlacementKeys.Contains(EKeys::D)) - float(PlacementKeys.Contains(EKeys::A));
+            Movement.Z = float(PlacementKeys.Contains(EKeys::LeftShift) || PlacementKeys.Contains(EKeys::RightShift)) - float(PlacementKeys.Contains(EKeys::SpaceBar));
+            Controller->MoveCharacter(Movement, Delta);
+        }
     }
-    bool IsMenuBlocking() const { return bMenuOpen || !MenuFade.IsAtStart(); }
+    bool IsMenuBlocking() const
+    {
+        return bHudVisible && (CurrentPage == "Choose" || CurrentPage == "Status")
+            && (bMenuOpen || !MenuFade.IsAtStart());
+    }
+    void ToggleHud()
+    {
+        if (bHudVisible && MappingPanel) MappingPanel->FlushSave();
+        bHudVisible = !bHudVisible;
+        PlacementKeys.Reset();
+        if (FSlateApplication::IsInitialized()) FSlateApplication::Get().SetKeyboardFocus(SharedThis(this));
+    }
+    void MovePanel(FVector2D& Position, FVector2D Delta, FVector2D Size)
+    {
+        const FVector2D Viewport = GetCachedGeometry().GetLocalSize();
+        Position.X = FMath::Clamp(Position.X + Delta.X, 0.f, FMath::Max(0.f, Viewport.X - Size.X));
+        Position.Y = FMath::Clamp(Position.Y + Delta.Y, 0.f, FMath::Max(0.f, Viewport.Y - 44.f));
+    }
+    bool PointerOnPanel(const FGeometry& Geometry, const FPointerEvent& Event) const
+    {
+        if (!bHudVisible) return false;
+        const FVector2D Point = Geometry.AbsoluteToLocal(Event.GetScreenSpacePosition());
+        const FSlateRect Navigation(NavigationPosition.X, NavigationPosition.Y,
+            NavigationPosition.X + 320, NavigationPosition.Y + (bNavigationCollapsed ? 44 : 300));
+        const FSlateRect Page(PagePosition.X, PagePosition.Y,
+            PagePosition.X + PageSize.X, PagePosition.Y + PageSize.Y);
+        return Navigation.ContainsPoint(Point) || ((bMenuOpen || !MenuFade.IsAtStart()) && Page.ContainsPoint(Point));
+    }
     void CloseWindow()
     {
+        if (MappingPanel) MappingPanel->FlushSave();
+        MappingPanel.Reset();
         bMenuOpen = false;
+        CurrentPage = "Main";
         if (Controller.IsValid()) { Controller->bChoosing = false; Controller->ClearMaterialPreview(); }
         MenuFade.PlayRelative(SharedThis(this), false);
         if (FSlateApplication::IsInitialized()) FSlateApplication::Get().SetKeyboardFocus(SharedThis(this));
@@ -270,20 +450,146 @@ public:
     }
     void OpenPage(FName Page = "Main")
     {
+        if (Page == "Main") { CloseWindow(); bHudVisible = true; return; }
+        if (MappingPanel) MappingPanel->FlushSave();
+        MappingPanel.Reset();
         CurrentPage = Page;
-        MenuLayer->SetHAlign(Page == "FaceMaterial" ? HAlign_Right : HAlign_Center);
-        MenuLayer->SetBorderBackgroundColor(FLinearColor(0.008f, 0.012f, 0.02f, Page == "FaceMaterial" ? .20f : .60f));
+        PlacementKeys.Reset();
         TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
         auto Add = [&](TSharedRef<SWidget> Widget) { Body->AddSlot().AutoHeight().Padding(0, 0, 0, 10)[Widget]; };
         FString Title = TEXT("菜单");
-        if (Page == "Main")
+        if (Page == "Graphics")
         {
-            Add(Button(TEXT("模型"), [this] { OpenPage("Model"); }));
-            Add(Button(TEXT("渲染"), [this] { OpenPage("Rendering"); }));
-            Add(Button(TEXT("背景"), [this] { OpenPage("Background"); }));
-            Add(Button(TEXT("设置"), [this] { OpenPage("Settings"); }));
+            Title = TEXT("画面");
+            Add(Button(TEXT("相机与抗锯齿"), [this] { OpenPage("Settings"); }));
+            Add(Button(TEXT("OBS 视频输出"), [this] { OpenPage("Output"); }));
             Add(Button(TEXT("视角"), [this] { OpenPage("View"); }));
-            Add(Button(TEXT("返回角色"), [this] { CloseWindow(); }));
+            Add(Button(TEXT("渲染"), [this] { OpenPage("Rendering"); }));
+        }
+        else if (Page == "Scene")
+        {
+            Title = TEXT("场景");
+            Add(Button(TEXT("背景颜色"), [this] { OpenPage("Background"); }));
+        }
+        else if (Page == "Application")
+        {
+            Title = TEXT("应用");
+            Add(Button(TEXT("打开用户数据目录"), [] { FPlatformProcess::ExploreFolder(*FMmdEnhancement::UserDataDir()); }));
+            Add(Button(TEXT("清理生成缓存"), [this] { OpenPage("ClearCache"); }));
+            Add(Label(TEXT("中键旋转 · Shift + 中键平移 · 滚轮缩放\n小键盘切换视角 · Home 重新取景\nH 隐藏或恢复界面"), 12, Muted));
+        }
+        else if (Page == "Tracking")
+        {
+            Title = TEXT("动作捕捉");
+            const auto CanConfigure = [this]
+            {
+                return Controller.IsValid() && !Controller->bBusy
+                    && !Controller->Tracking.IsRunning() && !Controller->Tracking.IsStopping();
+            };
+            const auto Section = [&](const TCHAR* Caption, float Top)
+            {
+                Body->AddSlot().AutoHeight().Padding(0, Top, 0, 8)
+                    [SNew(STextBlock).Text(FText::FromString(Caption)).ColorAndOpacity(Text)
+                        .Font(FCoreStyle::GetDefaultFontStyle("Bold", 13))];
+            };
+            const auto Setting = [&](const TCHAR* Caption, const TSharedRef<SWidget>& Value)
+            {
+                Body->AddSlot().AutoHeight().Padding(0, 0, 0, 8)
+                    [SNew(SHorizontalBox)
+                        + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 12, 0)
+                            [SNew(SBox).WidthOverride(124)[Label(Caption, 12, Muted)]]
+                        + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[Value]];
+            };
+            Section(TEXT("状态"), 0);
+            Add(SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller->Tracking.Status); })
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 13)).AutoWrapText(true).ColorAndOpacity(Text));
+            Add(SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller->TrackingSummary()); })
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)).AutoWrapText(true).ColorAndOpacity(Muted));
+            Setting(TEXT("处理速度"), SNew(STextBlock).Text_Lambda([this] { return FText::FromString(FString::Printf(TEXT("%.1f 帧/秒，%.1f ms"),
+                Controller->Tracking.InferenceFps, Controller->Tracking.InferenceMs)); }).ColorAndOpacity(Text)
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)));
+            Setting(TEXT("摄像头"), SNew(SBox).WidthOverride(180).HeightOverride(34)
+                [SNew(SButton).ButtonStyle(&PrimaryButtonStyle).HAlign(HAlign_Center)
+                    .IsEnabled_Lambda([this] { return Controller.IsValid() && !Controller->Tracking.IsStopping()
+                        && (Controller->Tracking.IsRunning() || (Controller->Rig && !Controller->bBusy)); })
+                    .OnClicked_Lambda([this] { Controller->ToggleTracking(); return FReply::Handled(); })
+                    [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller->Tracking.IsStopping() ? TEXT("正在停止…")
+                        : Controller->Tracking.IsRunning() ? TEXT("停止捕捉") : TEXT("启动捕捉")); })
+                        .ColorAndOpacity(FSlateColor::UseForeground()).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))]]);
+
+            Section(TEXT("摄像头"), 12);
+            Setting(TEXT("设备编号"), SNew(SBox).WidthOverride(140).HeightOverride(34)
+                [SNew(SNumericEntryBox<int32>).EditableTextBoxStyle(&FMmdUiStyle::Get().Editable).SpinBoxStyle(&FMmdUiStyle::Get().Spin)
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)).AllowSpin(true).MinDesiredValueWidth(116).MinValue(0).MaxValue(32)
+                    .IsEnabled_Lambda(CanConfigure).Value_Lambda([this] { return Controller->Tracking.CameraIndex; })
+                    .OnValueCommitted_Lambda([this, CanConfigure](int32 Value, ETextCommit::Type)
+                        { if (CanConfigure()) { Controller->Tracking.CameraIndex = FMath::Clamp(Value, 0, 32); Controller->Tracking.SaveSettings(); } })]);
+            TSharedPtr<FIntPoint> SelectedResolution;
+            for (const auto& Resolution : TrackingResolutions)
+                if (Resolution->X == Controller->Tracking.Width && Resolution->Y == Controller->Tracking.Height) SelectedResolution = Resolution;
+            Setting(TEXT("分辨率"), SNew(SBox).WidthOverride(220).HeightOverride(34)
+                [SNew(SComboBox<TSharedPtr<FIntPoint>>).ComboBoxStyle(&FMmdUiStyle::Get().Combo).ItemStyle(&FMmdUiStyle::Get().Row)
+                    .OptionsSource(&TrackingResolutions).InitiallySelectedItem(SelectedResolution).IsEnabled_Lambda(CanConfigure)
+                    .OnGenerateWidget_Lambda([](TSharedPtr<FIntPoint> Resolution) -> TSharedRef<SWidget>
+                        { return Label(Resolution.IsValid() ? FString::Printf(TEXT("%d × %d"), Resolution->X, Resolution->Y) : FString(), 12); })
+                    .OnSelectionChanged_Lambda([this, CanConfigure](TSharedPtr<FIntPoint> Resolution, ESelectInfo::Type SelectInfo)
+                    {
+                        if (!Resolution.IsValid() || !CanConfigure() || SelectInfo == ESelectInfo::Direct) return;
+                        Controller->Tracking.Width = Resolution->X; Controller->Tracking.Height = Resolution->Y;
+                        Controller->Tracking.FramesPerSecond = 30; Controller->Tracking.SaveSettings();
+                    })
+                    [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(FString::Printf(TEXT("%d × %d"),
+                        Controller->Tracking.Width, Controller->Tracking.Height)); }).ColorAndOpacity(Text)
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))]]);
+            Add(Label(TEXT("停止摄像头后可调整配置；新配置在下次启动时生效。"), 11, Muted));
+
+            Section(TEXT("追踪"), 12);
+            Setting(TEXT("帧率上限"), SNew(SBox).WidthOverride(140).HeightOverride(34)
+                [SNew(SNumericEntryBox<int32>).EditableTextBoxStyle(&FMmdUiStyle::Get().Editable).SpinBoxStyle(&FMmdUiStyle::Get().Spin)
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)).AllowSpin(true).MinDesiredValueWidth(116).MinValue(5).MaxValue(60)
+                    .IsEnabled_Lambda(CanConfigure).Value_Lambda([this] { return Controller->Tracking.FramesPerSecond; })
+                    .OnValueCommitted_Lambda([this, CanConfigure](int32 Value, ETextCommit::Type)
+                        { if (CanConfigure()) { Controller->Tracking.FramesPerSecond = FMath::Clamp(Value, 5, 60); Controller->Tracking.SaveSettings(); } })]);
+            Setting(TEXT("置信度阈值"), SNew(SBox).WidthOverride(140).HeightOverride(34)
+                [SNew(SNumericEntryBox<float>).EditableTextBoxStyle(&FMmdUiStyle::Get().Editable).SpinBoxStyle(&FMmdUiStyle::Get().Spin)
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)).AllowSpin(true).MinDesiredValueWidth(116).MinValue(.1f).MaxValue(.99f)
+                    .MinFractionalDigits(2).MaxFractionalDigits(2).IsEnabled_Lambda(CanConfigure).Value_Lambda([this] { return Controller->Tracking.Confidence; })
+                    .OnValueCommitted_Lambda([this, CanConfigure](float Value, ETextCommit::Type)
+                        { if (CanConfigure() && FMath::IsFinite(Value)) { Controller->Tracking.Confidence = FMath::Clamp(Value, .1f, .99f); Controller->Tracking.SaveSettings(); } })]);
+            Setting(TEXT("镜像"), SNew(SCheckBox).Style(&FMmdUiStyle::Get().Check).IsEnabled_Lambda(CanConfigure)
+                .IsChecked_Lambda([this] { return Controller->Tracking.bMirror ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+                .OnCheckStateChanged_Lambda([this, CanConfigure](ECheckBoxState State)
+                    { if (CanConfigure()) { Controller->Tracking.bMirror = State == ECheckBoxState::Checked; Controller->Tracking.SaveSettings(); } })
+                [Label(TEXT("左右镜像"), 12)]);
+            Setting(TEXT("中立姿态"), SNew(SBox).WidthOverride(180).HeightOverride(34)
+                [SNew(SButton).ButtonStyle(&ButtonStyle).HAlign(HAlign_Center)
+                    .IsEnabled_Lambda([this] { return Controller.IsValid() && Controller->Rig && !Controller->bBusy && !Controller->Tracking.IsStopping()
+                        && (Controller->Rig->HasTracking() || (Controller->bPoseSeen && FPlatformTime::Seconds() - Controller->LastTrackingFrame < .5)); })
+                    .OnClicked_Lambda([this]
+                    {
+                        if (Controller->Rig && Controller->Rig->CalibrateNeutral())
+                        {
+                            FString Error;
+                            if (!Controller->Rig->SaveProfile(Error)) Controller->Tracking.Status = TEXT("中立姿态保存失败：") + Error;
+                        }
+                        return FReply::Handled();
+                    })[Label(TEXT("校准当前姿态"), 12)]]);
+            Add(Label(TEXT("正对镜头、保持自然姿态后校准。摄像头画面只在本机处理。"), 11, Muted));
+        }
+        else if (Page == "Mapping")
+        {
+            Title = TEXT("动作映射");
+            if (Controller->Rig) Add(SAssignNew(MappingPanel, SVtuberRigPanel, Controller->Rig.Get()));
+            else Add(Label(TEXT("请先导入角色。")));
+            Add(Button(TEXT("返回"), [this] { OpenPage(); }));
+        }
+        else if (Page == "Output")
+        {
+            Title = TEXT("Spout 输出");
+            Add(SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller->Output ? Controller->Output->GetStatus() : TEXT("尚未初始化")); }).ColorAndOpacity(Text).AutoWrapText(true));
+            Add(Button(TEXT("启动 / 停止 HonkaiVTuber 输出"), [this] { Controller->ToggleSpout(); }));
+            Add(Label(TEXT("输出 1280 × 720，30 FPS。视角跟随当前摄像机，菜单不会进入输出。\n透明输出需通过接收端检查后启用。"), 12, Muted));
+            Add(Button(TEXT("返回"), [this] { OpenPage(); }));
         }
         else if (Page == "Model")
         {
@@ -340,7 +646,7 @@ public:
         else if (Page == "Background")
         {
             Title = TEXT("背景");
-            Add(Button(TEXT("中性灰蓝"), [this] { Controller->SetBackground(0); }));
+            Add(Button(TEXT("Blender 中性灰"), [this] { Controller->SetBackground(0); }));
             Add(Button(TEXT("浅灰"), [this] { Controller->SetBackground(1); }));
             Add(Button(TEXT("深灰"), [this] { Controller->SetBackground(2); }));
             Add(Button(TEXT("返回"), [this] { OpenPage(); }));
@@ -370,7 +676,7 @@ public:
             Title = TEXT("视角");
             Add(Button(TEXT("聚焦模型"), [this] { Controller->FocusModel(); CloseWindow(); }));
             Add(Button(TEXT("正交 / 透视"), [this] { Controller->ToggleProjection(); CloseWindow(); }));
-            Add(Label(TEXT("中键拖动：旋转\nShift + 中键：平移\nCtrl + 中键或滚轮：缩放\n\n小键盘 1 / 3 / 7：正 / 右 / 顶视图\nCtrl + 小键盘：反向视图\n小键盘 5：正交 / 透视\n小键盘 . 或 Home：聚焦"), 12, Muted));
+            Add(Label(TEXT("中键拖动：旋转（向右拖动时视角向左转）\nShift + 中键：平移\nCtrl + 中键或滚轮：缩放\nWASD：水平移动角色；Shift：上移；Space：下移\n\n小键盘 1 / 3 / 7：正 / 右 / 顶视图\nCtrl + 小键盘：反向视图\n小键盘 5：正交 / 透视\n小键盘 . 或 Home：聚焦"), 12, Muted));
             Add(Button(TEXT("返回"), [this] { OpenPage(); }));
         }
         else if (Page == "Choose")
@@ -389,22 +695,42 @@ public:
             Add(SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller->Status); }).AutoWrapText(true).ColorAndOpacity(Text));
             if (!Controller->bBusy) Add(Button(TEXT("关闭"), [this] { CloseWindow(); }));
         }
-        Body->InsertSlot(0).AutoHeight().Padding(0, 0, 0, 20)[Label(Title, 20)];
         TWeakPtr<SMmdViewer> Weak = SharedThis(this);
-        TSharedRef<SMmdMenu> Content = SNew(SMmdMenu, [Weak]
-        {
-            if (auto Self = Weak.Pin()) Self->CloseWindow();
-        }, SNew(SBox).WidthOverride(410)
-        [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(Panel).Padding(28)
-            [SNew(SBox).MaxDesiredHeight(540)[SNew(SScrollBox) + SScrollBox::Slot()[Body]]]]);
-        MenuLayer->SetContent(Content);
+        const bool bWidePage = Page == "Mapping";
+        PageSize = bWidePage ? FVector2D(880, 680) : Page == "Tracking" ? FVector2D(560, 700) : FVector2D(560, 520);
+        const FVector2D Viewport = GetCachedGeometry().GetLocalSize();
+        PagePosition = FVector2D(FMath::Max(0.f, (Viewport.X - PageSize.X) * .5f),
+            FMath::Max(0.f, (Viewport.Y - PageSize.Y) * .5f));
+        FMmdMenuSetup PageSetup{Title,
+            [Weak] { if (auto Self = Weak.Pin()) Self->CloseWindow(); },
+            [Weak] { if (auto Self = Weak.Pin()) Self->ToggleHud(); },
+            [Weak](FVector2D Delta) { if (auto Self = Weak.Pin()) Self->MovePanel(Self->PagePosition, Delta, Self->PageSize); },
+            TFunction<void()>(),
+            SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                .BorderBackgroundColor(Panel).Padding(bWidePage ? 10.f : 20.f)
+                [SNew(SScrollBox) + SScrollBox::Slot()[Body]]};
+        TSharedRef<SMmdMenu> Content = SNew(SMmdMenu, PageSetup);
+        PageHost->SetContent(Content);
         bDragging = false;
+        bHudVisible = true;
         bMenuOpen = true;
         MenuFade.PlayRelative(SharedThis(this), true);
         FSlateApplication::Get().SetKeyboardFocus(Content);
     }
     void RefreshChoices() { OpenPage("Choose"); }
     virtual bool SupportsKeyboardFocus() const override { return true; }
+    virtual FReply OnPreviewKeyDown(const FGeometry&, const FKeyEvent& Event) override
+    {
+        if (Event.GetKey() == EKeys::H) { ToggleHud(); return FReply::Handled(); }
+        if (Event.GetKey() == EKeys::Escape) { if (!bHudVisible) ToggleHud(); else if (bMenuOpen) CloseWindow(); else ToggleHud(); return FReply::Handled(); }
+        return FReply::Unhandled();
+    }
+    virtual void OnFocusLost(const FFocusEvent& Event) override { PlacementKeys.Reset(); SCompoundWidget::OnFocusLost(Event); }
+    virtual FReply OnKeyUp(const FGeometry&, const FKeyEvent& Event) override
+    {
+        if (PlacementKeys.Remove(Event.GetKey())) return FReply::Handled();
+        return FReply::Unhandled();
+    }
     virtual FReply OnDragOver(const FGeometry&, const FDragDropEvent& Event) override
     {
         auto Files = Event.GetOperationAs<FExternalDragOperation>();
@@ -422,9 +748,9 @@ public:
         }
         return FReply::Handled();
     }
-    virtual FReply OnMouseButtonDown(const FGeometry&, const FPointerEvent& Event) override
+    virtual FReply OnMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& Event) override
     {
-        if (Event.GetEffectingButton() == EKeys::MiddleMouseButton && !IsMenuBlocking())
+        if (Event.GetEffectingButton() == EKeys::MiddleMouseButton && !PointerOnPanel(Geometry, Event))
         {
             bDragging = true;
             return FReply::Handled().CaptureMouse(SharedThis(this)).UseHighPrecisionMouseMovement(SharedThis(this)).SetUserFocus(SharedThis(this));
@@ -442,14 +768,18 @@ public:
         if (bDragging) { Controller->Orbit(Event.GetCursorDelta(), Event.IsShiftDown(), Event.IsControlDown()); return FReply::Handled(); }
         return FReply::Unhandled();
     }
-    virtual FReply OnMouseWheel(const FGeometry&, const FPointerEvent& Event) override
+    virtual FReply OnMouseWheel(const FGeometry& Geometry, const FPointerEvent& Event) override
     {
-        if (!IsMenuBlocking()) Controller->Zoom(Event.GetWheelDelta());
+        if (!PointerOnPanel(Geometry, Event)) Controller->Zoom(Event.GetWheelDelta());
         return FReply::Handled();
     }
     virtual FReply OnKeyDown(const FGeometry&, const FKeyEvent& Event) override
     {
-        if (Event.GetKey() == EKeys::Escape) { if (bMenuOpen) CloseWindow(); else OpenPage(); return FReply::Handled(); }
+        if (Event.GetKey() == EKeys::H) { ToggleHud(); return FReply::Handled(); }
+        if (Event.GetKey() == EKeys::Escape) { if (!bHudVisible) ToggleHud(); else if (bMenuOpen) CloseWindow(); else ToggleHud(); return FReply::Handled(); }
+        if (!IsMenuBlocking() && (Event.GetKey() == EKeys::W || Event.GetKey() == EKeys::A || Event.GetKey() == EKeys::S || Event.GetKey() == EKeys::D
+            || Event.GetKey() == EKeys::SpaceBar || Event.GetKey() == EKeys::LeftShift || Event.GetKey() == EKeys::RightShift))
+        { PlacementKeys.Add(Event.GetKey()); return FReply::Handled(); }
         if (IsMenuBlocking()) return FReply::Handled();
         if (Event.GetKey() == EKeys::NumPadOne) Controller->SetView(1, Event.IsControlDown());
         else if (Event.GetKey() == EKeys::NumPadThree) Controller->SetView(3, Event.IsControlDown());
@@ -520,6 +850,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMmdMaterialsTest, "HonkaiRendering.Rendering.S
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FMmdMaterialsTest::RunTest(const FString& Parameters)
 {
+    TestEqual(TEXT("Skin uses the shared skin outline"), OutlineRegion(TEXT("skin_hand")), 1.f);
+    TestEqual(TEXT("Glove does not inherit hand skin styling"), OutlineRegion(TEXT("hand_glove")), 0.f);
+    TestEqual(TEXT("Japanese hair uses hair styling"), OutlineRegion(TEXT("髪_01")), 2.f);
+    TestEqual(TEXT("Unclassified mixed materials keep the default outline"), OutlineRegion(TEXT("body")), 0.f);
+
     for (const TCHAR* Path : {TEXT("/Game/MmdViewer/M_Toon"), TEXT("/Game/MmdViewer/M_ToonTwoSided")})
     {
         auto* Material = LoadObject<UMaterial>(nullptr, Path);
@@ -651,6 +986,22 @@ bool FMmdEffectToggleTest::RunTest(const FString& Parameters)
     }
     Menu->CloseWindow();
     TestTrue(TEXT("Light panel contrast"), Panel.R > .8f && Text.R < .1f);
+    Controller->ModelActor = World->SpawnActor<AActor>();
+    auto* ModelRoot = NewObject<USceneComponent>(Controller->ModelActor);
+    Controller->ModelActor->SetRootComponent(ModelRoot);
+    ModelRoot->RegisterComponent();
+    Controller->Rotation = FRotator::ZeroRotator;
+    auto Controls = SNew(SMmdViewer, Controller);
+    Controls->PlacementKeys.Add(EKeys::LeftShift);
+    Controls->Tick(FGeometry(), 0, .1f);
+    const float RaisedZ = Controller->ModelActor->GetActorLocation().Z;
+    TestTrue(TEXT("Shift raises the character"), RaisedZ > 0.f);
+    Controls->PlacementKeys.Reset();
+    Controls->PlacementKeys.Add(EKeys::SpaceBar);
+    Controls->Tick(FGeometry(), 0, .1f);
+    TestTrue(TEXT("Space lowers the character"), Controller->ModelActor->GetActorLocation().Z < RaisedZ);
+    Controller->Orbit(FVector2D(10.f, 0.f), false, false);
+    TestTrue(TEXT("Horizontal orbit follows the corrected drag direction"), Controller->Rotation.Yaw > 0.f);
     World->DestroyWorld(false);
     return true;
 }
@@ -661,22 +1012,42 @@ bool FMmdOverlayTest::RunTest(const FString& Parameters)
 {
     const int32 Windows = FSlateApplication::Get().GetTopLevelWindows().Num();
     auto Menu = SNew(SMmdViewer, nullptr);
-    TestFalse(TEXT("Menu starts hidden"), Menu->IsMenuBlocking());
-    Menu->OpenPage();
+    TestFalse(TEXT("Navigation does not block camera"), Menu->IsMenuBlocking());
+    TestTrue(TEXT("Viewer starts with UI hidden"), Menu->MenuLayer->GetVisibility() == EVisibility::Collapsed);
+    Menu->ToggleHud();
+    Menu->Tick(FGeometry(), 0, 0);
+    TestTrue(TEXT("H restores floating navigation"), Menu->MenuLayer->GetVisibility().IsVisible());
+    Menu->OpenPage("Application");
     Menu->MenuFade.JumpToEnd();
     Menu->Tick(FGeometry(), 0, 0);
-    TestTrue(TEXT("Open menu blocks camera input"), Menu->IsMenuBlocking());
-    TestTrue(TEXT("Overlay is visible"), Menu->MenuLayer->GetVisibility().IsVisible());
+    TestFalse(TEXT("Floating page leaves background controls available"), Menu->IsMenuBlocking());
+    auto* Rig = NewObject<UVtuberRigComponent>();
+    auto Mapping = SNew(SVtuberRigPanel, Rig);
+    Mapping->bSavePending = true;
+    Menu->MappingPanel = Mapping;
+    Menu->ToggleHud();
+    Menu->Tick(FGeometry(), 0, 0);
+    TestFalse(TEXT("H hides all pages and releases input"), Menu->IsMenuBlocking());
+    TestTrue(TEXT("Hidden overlay collapses"), Menu->MenuLayer->GetVisibility() == EVisibility::Collapsed);
+    TestFalse(TEXT("H flushes pending mapping changes"), Mapping->bSavePending);
+    const FKeyEvent EscapeEvent(EKeys::Escape, FModifierKeysState(), uint32(0), false, 0, 0);
+    Menu->OnPreviewKeyDown(FGeometry(), EscapeEvent);
+    Menu->Tick(FGeometry(), 0, 0);
+    TestTrue(TEXT("Esc restores hidden page directly"), Menu->bHudVisible && Menu->bMenuOpen && Menu->MenuLayer->GetVisibility().IsVisible());
+    Menu->ToggleHud();
+    Menu->ToggleHud();
+    Menu->Tick(FGeometry(), 0, 0);
+    TestTrue(TEXT("H restores the open page"), Menu->bMenuOpen && Menu->MenuLayer->GetVisibility().IsVisible());
     Menu->CloseWindow();
-    TestTrue(TEXT("Fade-out still blocks camera input"), Menu->IsMenuBlocking());
-    Menu->OpenPage();
+    TestFalse(TEXT("Fade-out of floating page leaves camera input available"), Menu->IsMenuBlocking());
+    Menu->OpenPage("Scene");
     TestTrue(TEXT("Reopening during fade-out works"), Menu->bMenuOpen);
     Menu->CloseWindow();
     Menu->MenuFade.JumpToStart();
     Menu->MenuFade.Pause();
     Menu->Tick(FGeometry(), 0, 0);
     TestFalse(TEXT("Closed menu releases camera input"), Menu->IsMenuBlocking());
-    TestTrue(TEXT("Closed overlay collapses"), Menu->MenuLayer->GetVisibility() == EVisibility::Collapsed);
+    TestTrue(TEXT("Navigation remains visible after page closes"), Menu->MenuLayer->GetVisibility().IsVisible());
     TestEqual(TEXT("No native window was created"), FSlateApplication::Get().GetTopLevelWindows().Num(), Windows);
     return true;
 }
@@ -690,6 +1061,17 @@ AMmdViewerGameMode::AMmdViewerGameMode()
 void AMmdViewerController::BeginPlay()
 {
 	Super::BeginPlay(); bShowMouseCursor = true; PrimaryActorTick.bCanEverTick = true; SetActorTickEnabled(true);
+    Tracking.LoadSettings();
+#if WITH_DEV_AUTOMATION_TESTS
+    FString ReplayPath;
+    if (FParse::Value(FCommandLine::Get(), TEXT("VtuberReplay="), ReplayPath))
+    {
+        bTrackingReplay = FNativeTracking::LoadReplayFrame(ReplayPath, Tracking.bMirror, ReplaySnapshot);
+        if (bTrackingReplay) { UE_LOG(LogTemp, Display, TEXT("VTUBER_REPLAY offline=1 loaded=1 path=%s"), *ReplayPath); }
+        else { UE_LOG(LogTemp, Warning, TEXT("VTUBER_REPLAY offline=1 loaded=0 path=%s"), *ReplayPath); }
+        if (bTrackingReplay) Tracking.Status = TEXT("离线姿态回放，不占用摄像头");
+    }
+#endif
 	ToonMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/MmdViewer/M_Toon.M_Toon"));
 	ToonTwoSidedMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/MmdViewer/M_ToonTwoSided.M_ToonTwoSided"));
 	OutlineMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/MmdViewer/M_Outline.M_Outline"));
@@ -742,10 +1124,13 @@ void AMmdViewerController::BeginPlay()
         }
     }
     UpdateCamera();
+    Output = NewObject<UVtuberOutput>(this);
+    Output->Initialize(ViewerCamera, C, {});
     for (TActorIterator<AActor> It(GetWorld()); It; ++It)
         if (auto* Component = It->FindComponentByClass<UStaticMeshComponent>())
             if (auto* Material = Component->GetMaterial(0); Material && Material->GetName() == TEXT("M_Backdrop"))
                 BackdropMaterial = Component->CreateDynamicMaterialInstance(0);
+	SetBackground(0);
 	Widget = SNew(SMmdViewer, this); GEngine->GameViewport->AddViewportWidgetContent(Widget.ToSharedRef());
 	FInputModeUIOnly Input; Input.SetWidgetToFocus(Widget); Input.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock); SetInputMode(Input);
 	FString AutoImport;
@@ -754,6 +1139,8 @@ void AMmdViewerController::BeginPlay()
 
 void AMmdViewerController::EndPlay(const EEndPlayReason::Type Reason)
 {
+    Tracking.Stop();
+    if (Output) Output->Shutdown();
 	Enhancement.Cancel();
 	if (Widget) Widget->CloseWindow();
 	if (Widget && GEngine && GEngine->GameViewport) GEngine->GameViewport->RemoveViewportWidgetContent(Widget.ToSharedRef());
@@ -794,6 +1181,7 @@ void AMmdViewerController::LoadArchive(const FString& Path)
 {
     if (bBusy) return;
     if (Enhancement.IsRunning()) { EnhancementNotice = TEXT("请先取消或等待增强任务，再导入其他模型。"); Widget->OpenPage("Generation"); return; }
+    bHudVisibleBeforeImport = Widget.IsValid() && Widget->bHudVisible;
     bBusy = true; Status = TEXT("正在展开压缩包…"); Widget->OpenPage("Status");
     const FString Storage = FMmdEnhancement::ImportsDir() / FGuid::NewGuid().ToString(EGuidFormats::Digits);
     const FString Destination = Storage / TEXT("Resources");
@@ -841,7 +1229,8 @@ void AMmdViewerController::LoadModel(const FString& Path)
     FImportOptionData Options;
     Options.ModelScale = 0.1f;
     Options.MaterialType = EVRMImportMaterialType::VRMIMT_MToonUnlit;
-    Options.bSkipPhysics = true; Options.bSkipRetargeter = true; Options.bSkipMorphTarget = true;
+    Options.bSkipPhysics = false; Options.bSkipRetargeter = true; Options.bSkipMorphTarget = false;
+    Options.bForceOriginalMorphTargetName = true;
     Options.bGenerateOutlineMaterial = false;
     // VRM4U's async prepass assumes VRM; its generic loader handles PMX.
     FTimerHandle Handle;
@@ -865,12 +1254,13 @@ void AMmdViewerController::OnModelLoaded()
     for (UTexture2D* Texture : PendingAsset->Textures) if (Texture && !Texture->GetResource()) Texture->UpdateResource();
     auto* NewActor = GetWorld()->SpawnActor<AActor>();
     auto* Mesh = NewObject<USkeletalMeshComponent>(NewActor); NewActor->SetRootComponent(Mesh); Mesh->RegisterComponent();
-    Mesh->SetSkeletalMesh(PendingAsset->SkeletalMesh); Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision); Mesh->SetSimulatePhysics(false); Mesh->SetCastShadow(true);
+    Mesh->SetSkeletalMesh(PendingAsset->SkeletalMesh); Mesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly); Mesh->SetSimulatePhysics(false); Mesh->SetCastShadow(true);
     Mesh->SetRenderCustomDepth(true); Mesh->SetCustomDepthStencilValue(1);
-    Mesh->bPauseAnims = true;
-    auto* Outline = NewObject<USkeletalMeshComponent>(NewActor);
-    Outline->SetupAttachment(Mesh); Outline->RegisterComponent(); Outline->SetSkeletalMesh(PendingAsset->SkeletalMesh);
-    Outline->SetCollisionEnabled(ECollisionEnabled::NoCollision); Outline->SetCastShadow(false); Outline->bPauseAnims = true;
+    Mesh->bPauseAnims = false;
+    auto* Outline = NewObject<UVrmPoseableMeshComponent>(NewActor);
+    Outline->SetupAttachment(Mesh); Outline->RegisterComponent(); Outline->SetSkinnedAssetAndUpdate(PendingAsset->SkeletalMesh);
+    Outline->SetCollisionEnabled(ECollisionEnabled::NoCollision); Outline->SetCastShadow(false);
+    Outline->SetLeaderPoseComponent(Mesh); Outline->AddTickPrerequisiteComponent(Mesh);
     const bool bBaseColorOnly = FParse::Param(FCommandLine::Get(), TEXT("MmdBaseColor"));
     const auto FaceMaps = LoadFaceMaps(ImportDirectory / PendingPath, PendingAsset);
     SurfaceMaterials.Reset(); OriginalOutlines.Reset(); EnhancedOutlines.Reset(); SurfaceTints.Reset();
@@ -938,6 +1328,7 @@ void AMmdViewerController::OnModelLoaded()
         auto* Ink = UMaterialInstanceDynamic::Create(FaceMaps.Contains(I) ? FaceOutlineMaterial : OutlineMaterial, Outline);
         Ink->SetVectorParameterValue(TEXT("SurfaceTint"), Tint);
         Ink->SetVectorParameterValue(TEXT("Tint"), EdgeColor);
+        Ink->SetScalarParameterValue(TEXT("OutlineRegion"), OutlineRegion(SlotName));
         Ink->SetScalarParameterValue(TEXT("Opacity"), Transparent || EdgeEnabled < 0.5f ? 0.f : Tint.A * EdgeColor.A);
         Ink->SetScalarParameterValue(TEXT("OutlineWidth"), EdgeSize * (FaceMaps.Contains(I) ? 0.12f : 0.16f));
         if (auto* const* Face = FaceMaps.Find(I))
@@ -986,6 +1377,13 @@ void AMmdViewerController::OnModelLoaded()
     FRotator ModelRotation(0, -90, 0);
     Mesh->SetWorldRotation(ModelRotation);
     Mesh->SetRelativeLocation(ModelRotation.RotateVector(FVector(-Bounds.Origin.X, -Bounds.Origin.Y, Bounds.BoxExtent.Z - Bounds.Origin.Z)));
+    Rig = NewObject<UVtuberRigComponent>(NewActor); Rig->RegisterComponent();
+    FSHAHash RigHash; TArray<uint8> RigSource;
+    FFileHelper::LoadFileToArray(RigSource, *LoadedModelPath); FSHA1::HashBuffer(RigSource.GetData(), RigSource.Num(), RigHash.Hash);
+    Rig->Initialize(Mesh, FPaths::ProjectSavedDir() / TEXT("Mappings") / (RigHash.ToString().ToLower() + TEXT(".json")));
+    UE_LOG(LogTemp, Display, TEXT("VTUBER_RIG head=%s bones=%d morphs=%d missing_mappings=%d"), *Rig->GetHeadBone().ToString(), Rig->GetAvailableBones().Num(), Rig->GetAvailableMorphs().Num(), Rig->GetMissingMappings().Num());
+    Mesh->RegisterOnBoneTransformsFinalizedDelegate(FOnBoneTransformsFinalizedMultiCast::FDelegate::CreateUObject(this, &AMmdViewerController::UpdateFaceLight));
+    if (Output) Output->SetSubjectComponents({Mesh, Outline});
     ModelCenter = FVector(0, 0, Bounds.BoxExtent.Z); ModelRadius = Bounds.SphereRadius;
     UE_LOG(LogTemp, Display, TEXT("MMD_BOUNDS origin=%s extent=%s radius=%.2f"), *Bounds.Origin.ToString(), *Bounds.BoxExtent.ToString(), ModelRadius);
     ModelName = FPaths::GetBaseFilename(PendingPath);
@@ -1005,12 +1403,42 @@ void AMmdViewerController::OnModelLoaded()
     Distance *= FMath::Clamp(FrameScale, 0.1f, 2.f);
     Target.Z = ModelCenter.Z * FMath::Clamp(TargetHeight, 0.f, 2.f);
     UpdateCamera();
-    Status = Missing ? FString::Printf(TEXT("已加载。%d 个材质未匹配到基础贴图，使用材质颜色。"), Missing) : TEXT("已加载。中键旋转，Shift + 中键平移，滚轮缩放。");
+    Status = Missing ? FString::Printf(TEXT("已加载。%d 个材质未匹配到基础贴图，使用材质颜色。"), Missing) : TEXT("已加载。中键旋转；WASD 水平移动，Shift 上移，Space 下移。");
     UE_LOG(LogTemp, Display, TEXT("MMD_LOADED plugin=VRM4U name=%s vertices=%d triangles=%d missing=%d textures=%d"), *ModelName, Vertices, Triangles, Missing, LoadedAsset->Textures.Num());
     Widget->CloseWindow();
+    Widget->bHudVisible = bHudVisibleBeforeImport;
+    bool bAllowCamera = true;
+#if WITH_DEV_AUTOMATION_TESTS
+    bAllowCamera = !bTrackingReplay;
+#endif
+    if (bAllowCamera && FParse::Param(FCommandLine::Get(), TEXT("VtuberCamera")) && !Tracking.IsRunning()) Tracking.Start();
+    if (Output && FParse::Param(FCommandLine::Get(), TEXT("VtuberSpout"))) Output->SetEnabled(true);
     FString Capture;
     if (FParse::Value(FCommandLine::Get(), TEXT("MmdCapture="), Capture))
     {
+#if WITH_DEV_AUTOMATION_TESTS
+        FString CapturePage;
+        if (FParse::Value(FCommandLine::Get(), TEXT("MmdCapturePage="), CapturePage))
+        {
+            const FName Page = CapturePage.Equals(TEXT("Mapping"), ESearchCase::IgnoreCase) ? FName(TEXT("Mapping"))
+                : CapturePage.Equals(TEXT("Capture"), ESearchCase::IgnoreCase) ? FName(TEXT("Tracking"))
+                : CapturePage.Equals(TEXT("Nav"), ESearchCase::IgnoreCase) ? FName(TEXT("Main")) : NAME_None;
+            if (!Page.IsNone())
+            {
+                TWeakObjectPtr<AMmdViewerController> Weak(this);
+                FTimerHandle PageHandle;
+                GetWorldTimerManager().SetTimer(PageHandle, [Weak, Page]
+                {
+                    if (auto* Self = Weak.Get(); Self && Self->Widget.IsValid())
+                    {
+                        Self->Widget->OpenPage(Page);
+                        UE_LOG(LogTemp, Display, TEXT("MMD_CAPTURE_PAGE page=%s"), *Page.ToString());
+                    }
+                }, 6.f, false);
+            }
+            else { UE_LOG(LogTemp, Warning, TEXT("MMD_CAPTURE_PAGE rejected unsupported page=%s"), *CapturePage); }
+        }
+#endif
         FTimerHandle Handle;
         GetWorldTimerManager().SetTimer(Handle, [Capture] { FScreenshotRequest::RequestScreenshot(Capture, true, false); }, 8.f, false);
         if (FParse::Param(FCommandLine::Get(), TEXT("MmdTestExit")))
@@ -1026,6 +1454,114 @@ void AMmdViewerController::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
     Enhancement.Tick();
     HandleGenerationStatus(Enhancement.GetStatus());
+    FVtuberTrackingSnapshot Snapshot;
+#if WITH_DEV_AUTOMATION_TESTS
+    if (bTrackingReplay && Rig)
+    {
+        ReplaySnapshot.TimestampSeconds = FPlatformTime::Seconds();
+        RecordTrackingFrame(ReplaySnapshot);
+        Rig->SubmitSnapshot(ReplaySnapshot);
+    }
+    else
+#endif
+    if (Tracking.Poll(Snapshot) && Rig) { RecordTrackingFrame(Snapshot); Rig->SubmitSnapshot(Snapshot); }
+#if WITH_DEV_AUTOMATION_TESTS
+    if (!bTrackingReplay && Rig && FParse::Param(FCommandLine::Get(), TEXT("VtuberPhysicsProbe")))
+    {
+        const double Time = GetWorld()->GetTimeSeconds();
+        Snapshot.TimestampSeconds = FPlatformTime::Seconds(); Snapshot.bFaceTracked = true;
+        Snapshot.HeadRotation = FRotator(8 * FMath::Sin(Time), 25 * FMath::Sin(Time * 1.7), 6 * FMath::Sin(Time * 1.3)).Quaternion();
+        Rig->SubmitSnapshot(Snapshot);
+    }
+    if (!bTrackingReplay && Rig && FParse::Param(FCommandLine::Get(), TEXT("VtuberRigProbe")))
+    {
+        // Explicit development probe, never used by the interactive camera mode.
+        Snapshot.TimestampSeconds = FPlatformTime::Seconds(); Snapshot.bFaceTracked = true;
+        Snapshot.HeadRotation = FRotator(8, 25, 0).Quaternion();
+        Snapshot.BlendShapes.Add(TEXT("jawOpen"), .65f);
+        Snapshot.BlendShapes.Add(TEXT("eyeBlinkLeft"), 1.f); Snapshot.BlendShapes.Add(TEXT("eyeBlinkRight"), 1.f);
+        Rig->SubmitSnapshot(Snapshot);
+    }
+#endif
+    if (Output) Output->Tick(DeltaSeconds);
+}
+
+void AMmdViewerController::ToggleTracking()
+{
+#if WITH_DEV_AUTOMATION_TESTS
+    if (bTrackingReplay) { Tracking.Status = TEXT("当前为离线姿态回放，未启动摄像头"); return; }
+#endif
+    if (Tracking.IsRunning()) { Tracking.Stop(); LastTrackingFrame = 0; bFaceSeen = bPoseSeen = false; HandsSeen = 0; }
+    else if (Rig) Tracking.Start();
+    else Tracking.Status = TEXT("请先导入角色");
+}
+void AMmdViewerController::RecordTrackingFrame(const FVtuberTrackingSnapshot& Snapshot)
+{
+    LastTrackingFrame = FPlatformTime::Seconds();
+    bFaceSeen = Snapshot.bFaceTracked;
+    bPoseSeen = Snapshot.bPoseTracked && Snapshot.PoseLandmarks.Num() >= 33;
+    HandsSeen = 0;
+    for (const FVtuberHandTracking& Hand : Snapshot.Hands)
+        if (Hand.Score > .05f && (Hand.Landmarks.Num() >= 21 || Hand.WorldLandmarks.Num() >= 21)) ++HandsSeen;
+    HandsSeen = FMath::Min(HandsSeen, 2);
+}
+FString AMmdViewerController::TrackingSummary()
+{
+    bool bActive = Tracking.IsRunning();
+#if WITH_DEV_AUTOMATION_TESTS
+    bActive |= bTrackingReplay;
+#endif
+    const bool bFresh = bActive && LastTrackingFrame > 0 && FPlatformTime::Seconds() - LastTrackingFrame < .5;
+    return FString::Printf(TEXT("面部 %s · 上身 %s · 双手 %d/2"),
+        bFresh && bFaceSeen ? TEXT("已识别") : TEXT("未识别"),
+        bFresh && bPoseSeen ? TEXT("已识别") : TEXT("未识别"), bFresh ? HandsSeen : 0);
+}
+void AMmdViewerController::ToggleSpout()
+{
+    if (Output && ModelMesh) Output->SetEnabled(!Output->IsEnabled());
+}
+void AMmdViewerController::UpdateFaceLight()
+{
+#if WITH_DEV_AUTOMATION_TESTS
+    if (ModelMesh && LoadedAsset && LoadedAsset->PmxPhysicsData && FParse::Param(FCommandLine::Get(), TEXT("VtuberPhysicsProbe")))
+    {
+        static double LastReport = 0;
+        const double Now = FPlatformTime::Seconds();
+        if (Now - LastReport >= 1.)
+        {
+            LastReport = Now;
+            const auto& ComponentPose = ModelMesh->GetComponentSpaceTransforms();
+            const auto& Ref = ModelMesh->GetSkeletalMeshAsset()->GetRefSkeleton();
+            const auto& Rest = Ref.GetRefBonePose();
+            int32 Moved = 0, Sampled = 0;
+            float MaxAngle = 0, MaxDistance = 0;
+            for (const auto& Body : LoadedAsset->PmxPhysicsData->RigidBodies)
+            {
+                const int32 Bone = Body.Mode ? Ref.FindBoneIndex(Body.BoneName) : INDEX_NONE;
+                if (!ComponentPose.IsValidIndex(Bone) || !Rest.IsValidIndex(Bone)) continue;
+                const int32 Parent = Ref.GetParentIndex(Bone);
+                const FTransform Local = Parent == INDEX_NONE ? ComponentPose[Bone] : ComponentPose[Bone].GetRelativeTransform(ComponentPose[Parent]);
+                ++Sampled;
+                const float Angle = FMath::RadiansToDegrees(Local.GetRotation().AngularDistance(Rest[Bone].GetRotation()));
+                const float LocalShiftCm = FVector::Distance(Local.GetLocation(), Rest[Bone].GetLocation());
+                Moved += Angle > .01f || LocalShiftCm > .001f;
+                MaxAngle = FMath::Max(MaxAngle, Angle); MaxDistance = FMath::Max(MaxDistance, LocalShiftCm);
+            }
+            UE_LOG(LogTemp, Display, TEXT("PMX_PHYSICS_PROBE sampled=%d moved_locals=%d max_angle=%.3f max_local_cm=%.4f"), Sampled, Moved, MaxAngle, MaxDistance);
+        }
+    }
+#endif
+
+    if (!Rig) return;
+    const FVector Direction = Rig->GetFaceLightDirection(KeyDirection);
+    for (auto Material : SurfaceMaterials) if (Material) Material->SetVectorParameterValue(TEXT("LightDirection"), FLinearColor(Direction));
+}
+void AMmdViewerController::MoveCharacter(FVector Direction, float DeltaSeconds)
+{
+    if (!ModelActor || !ViewerCamera || Direction.IsNearlyZero()) return;
+    const FRotator Yaw(0, ViewerCamera->GetActorRotation().Yaw, 0);
+    const FVector Offset = Yaw.RotateVector(Direction.GetClampedToMaxSize(1.f)) * 50.f * FMath::Min(DeltaSeconds, .1f);
+    ModelActor->AddActorWorldOffset(Offset); ModelCenter += Offset;
 }
 
 void AMmdViewerController::HandleGenerationStatus(const FMmdEnhancementStatus& Progress)
@@ -1171,7 +1707,7 @@ void AMmdViewerController::SetEnhancementResolution(int32 Resolution)
 
 void AMmdViewerController::SetBackground(int32 Preset)
 {
-    const FLinearColor Colors[] = {FLinearColor(.12f, .16f, .21f), FLinearColor(.72f, .73f, .74f), FLinearColor(.025f, .03f, .04f)};
+    const FLinearColor Colors[] = {FLinearColor(.046665f, .046665f, .046665f), FLinearColor(.72f, .73f, .74f), FLinearColor(.025f, .03f, .04f)};
     if (BackdropMaterial && Preset >= 0 && Preset < UE_ARRAY_COUNT(Colors)) BackdropMaterial->SetVectorParameterValue(TEXT("Tint"), Colors[Preset]);
 }
 

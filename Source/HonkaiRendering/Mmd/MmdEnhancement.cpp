@@ -182,7 +182,7 @@ FString FMmdEnhancement::UserDataDir()
 {
     FString Override;
     if (FParse::Value(FCommandLine::Get(), TEXT("MmdUserData="), Override) && !Override.IsEmpty()) return FullPath(Override);
-    return FullPath(FString(FPlatformProcess::UserSettingsDir()) / TEXT("HonkaiRendering"));
+    return FullPath(FString(FPlatformProcess::UserSettingsDir()) / TEXT("HonkaiVTuber"));
 }
 
 FString FMmdEnhancement::ImportsDir() { return UserDataDir() / TEXT("Imports"); }
