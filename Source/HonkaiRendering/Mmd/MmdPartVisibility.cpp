@@ -265,7 +265,11 @@ bool FMmdPartVisibility::Load(const FString& Path, FString& Error)
     if (!FFileHelper::LoadFileToString(Text, *Path) || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Root) || !Root) return Fail();
     double Version; bool Enabled;
     const TArray<TSharedPtr<FJsonValue>>* Hidden;
-    if (!Root->TryGetNumberField(TEXT("version"), Version) || Version != 1
+    if (!Root->HasTypedField<EJson::Number>(TEXT("version"))
+        || !Root->HasTypedField<EJson::String>(TEXT("topology"))
+        || !Root->HasTypedField<EJson::Boolean>(TEXT("enabled"))
+        || !Root->HasTypedField<EJson::Array>(TEXT("hidden"))
+        || !Root->TryGetNumberField(TEXT("version"), Version) || Version != 1
         || !Root->TryGetStringField(TEXT("topology"), LoadedSignature) || LoadedSignature != Signature
         || !Root->TryGetBoolField(TEXT("enabled"), Enabled) || !Root->TryGetArrayField(TEXT("hidden"), Hidden)
         || Hidden->Num() > ModelParts.Num()) return Fail();
@@ -274,7 +278,7 @@ bool FMmdPartVisibility::Load(const FString& Path, FString& Error)
     for (const auto& Item : *Hidden)
     {
         FString Id;
-        if (!Item.IsValid() || !Item->TryGetString(Id) || !Known.Contains(Id) || NewHidden.Contains(Id)) return Fail();
+        if (!Item.IsValid() || Item->Type != EJson::String || !Item->TryGetString(Id) || !Known.Contains(Id) || NewHidden.Contains(Id)) return Fail();
         NewHidden.Add(MoveTemp(Id));
     }
     bEnabled = Enabled; HiddenIds = MoveTemp(NewHidden);

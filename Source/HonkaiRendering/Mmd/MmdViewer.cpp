@@ -489,6 +489,7 @@ public:
     {
         if (bHudVisible && MappingPanel) MappingPanel->FlushSave();
         bHudVisible = !bHudVisible;
+        if (!bHudVisible && Controller.IsValid()) Controller->PreviewPart();
         if (Controller.IsValid()) Controller->Tracking.SetPreviewEnabled(bHudVisible && bResultsOpen);
         PlacementKeys.Reset();
         if (Controller.IsValid()) Controller->StopCharacterMovement();
@@ -899,7 +900,7 @@ public:
         }
         TWeakPtr<SMmdViewer> Weak = SharedThis(this);
         const bool bWidePage = Page == "Mapping" || Page == "Calibration";
-        PreferredPageSize = bWidePage ? FVector2D(880, 680) : Page == "Tracking" ? FVector2D(560, 700) : FVector2D(560, 520);
+        PreferredPageSize = bWidePage ? FVector2D(880, 680) : Page == "Tracking" ? FVector2D(560, 700) : Page == "Parts" ? FVector2D(560, 680) : FVector2D(560, 520);
         const FVector2D Viewport = GetCachedGeometry().GetLocalSize();
         UpdatePanelLayout(Viewport);
         PagePosition = FVector2D(FMath::Max(0.f, (Viewport.X - PageSize.X) * .5f),
@@ -1790,7 +1791,10 @@ void AMmdViewerController::OnModelLoaded()
                     auto* Asset = Self->ModelMesh->GetSkeletalMeshAsset();
                     for (const auto& Mapping : Self->Rig->GetMappings())
                     {
-                        if (Mapping.Channel != TEXT("eyeBlinkLeft") && Mapping.Channel != TEXT("eyeBlinkRight")) continue;
+                        if (Mapping.Channel != TEXT("eyeBlinkLeft") && Mapping.Channel != TEXT("eyeBlinkRight")
+                            && Mapping.Channel != TEXT("jawOpen") && Mapping.Channel != TEXT("mouthPucker")
+                            && Mapping.Channel != TEXT("mouthFunnel") && Mapping.Channel != TEXT("mouthSmileLeft")
+                            && Mapping.Channel != TEXT("mouthSmileRight")) continue;
                         const auto* Morph = Asset ? Asset->FindMorphTarget(Mapping.Morph) : nullptr;
                         FString Sections;
                         if (Morph && !Morph->GetMorphLODModels().IsEmpty())

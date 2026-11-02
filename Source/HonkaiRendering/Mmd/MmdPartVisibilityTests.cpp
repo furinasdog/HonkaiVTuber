@@ -11,6 +11,9 @@
 #include "Misc/Paths.h"
 #include "ReferenceSkeleton.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include <limits>
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
@@ -93,7 +96,7 @@ bool SameSet(const TSet<FString>& A, const TSet<FString>& B)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMmdPartTopologyTest, "Honkai.Mmd.PartVisibility.Topology",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+    EAutomationTestFlags::ClientContext | EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FMmdPartTopologyTest::RunTest(const FString& Parameters)
 {
     using namespace HonkaiPartVisibilityTests;
@@ -141,7 +144,7 @@ bool FMmdPartTopologyTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMmdPartMaskTest, "Honkai.Mmd.PartVisibility.Mask",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+    EAutomationTestFlags::ClientContext | EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FMmdPartMaskTest::RunTest(const FString& Parameters)
 {
     using namespace HonkaiPartVisibilityTests;
@@ -194,7 +197,7 @@ bool FMmdPartMaskTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMmdPartConfigTest, "Honkai.Mmd.PartVisibility.Config",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+    EAutomationTestFlags::ClientContext | EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FMmdPartConfigTest::RunTest(const FString& Parameters)
 {
     using namespace HonkaiPartVisibilityTests;
@@ -221,6 +224,26 @@ bool FMmdPartConfigTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Malformed configuration is rejected"), Loaded.Load(Path, Error));
     TestTrue(TEXT("Parse failure preserves all old selections"), SameSet(Loaded.HiddenIds, PreviousHidden));
     TestFalse(TEXT("Parse failure preserves the feature switch"), Loaded.bEnabled);
+    const TArray<TPair<FString, TSharedPtr<FJsonValue>>> WrongTypes{
+        {TEXT("version"), MakeShared<FJsonValueString>(TEXT("1"))},
+        {TEXT("enabled"), MakeShared<FJsonValueString>(TEXT("false"))},
+        {TEXT("topology"), MakeShared<FJsonValueNumber>(123)},
+        {TEXT("hidden"), MakeShared<FJsonValueString>(TEXT("[]"))},
+        {TEXT("hidden"), MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeShared<FJsonValueNumber>(123)})}
+    };
+    for (const auto& Wrong : WrongTypes)
+    {
+        TSharedPtr<FJsonObject> Root;
+        if (!TestTrue(TEXT("The actual saved configuration parses before a type-only mutation"),
+            FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Saved), Root) && Root.IsValid())) return false;
+        Root->SetField(Wrong.Key, Wrong.Value);
+        FString InvalidType;
+        FJsonSerializer::Serialize(Root.ToSharedRef(), TJsonWriterFactory<>::Create(&InvalidType));
+        FFileHelper::SaveStringToFile(InvalidType, *Path);
+        TestFalse(FString::Printf(TEXT("Wrong JSON type for %s is rejected without coercion"), *Wrong.Key), Loaded.Load(Path, Error));
+        TestTrue(TEXT("Wrong JSON type preserves hidden choices"), SameSet(Loaded.HiddenIds, PreviousHidden));
+        TestFalse(TEXT("The string false cannot turn the saved disabled switch on"), Loaded.bEnabled);
+    }
     FFileHelper::SaveStringToFile(Saved, *Path);
 #if PLATFORM_WINDOWS
     HANDLE Locked = ::CreateFileW(*FPaths::ConvertRelativePathToFull(Path), GENERIC_READ,
