@@ -1789,6 +1789,12 @@ void AMmdViewerController::OnModelLoaded()
                 if (Self->ModelMesh && Self->Rig)
                 {
                     auto* Asset = Self->ModelMesh->GetSkeletalMeshAsset();
+                    const auto& ImagePoints = Self->ReplaySnapshot.PoseLandmarks;
+                    UE_LOG(LogTemp, Display, TEXT("VTUBER_QA_SOURCE image_points=%d elbow14_y=%.6f wrist16_y=%.6f"), ImagePoints.Num(),
+                        ImagePoints.IsValidIndex(14) ? ImagePoints[14].Position.Y : -1., ImagePoints.IsValidIndex(16) ? ImagePoints[16].Position.Y : -1.);
+                    for (const TCHAR* Channel : {TEXT("spine"), TEXT("chest"), TEXT("upperarm_l"), TEXT("upperarm_r"), TEXT("lowerarm_l"), TEXT("lowerarm_r")})
+                        UE_LOG(LogTemp, Display, TEXT("VTUBER_QA_BODY channel=%s tracked=%d input=%.6f output_deg=%.6f"), Channel,
+                            Self->Rig->IsBodyChannelTracked(Channel), Self->Rig->GetChannelInput(Channel), Self->Rig->GetBodyChannelOutputDegrees(Channel));
                     for (const auto& Mapping : Self->Rig->GetMappings())
                     {
                         if (Mapping.Channel != TEXT("eyeBlinkLeft") && Mapping.Channel != TEXT("eyeBlinkRight")

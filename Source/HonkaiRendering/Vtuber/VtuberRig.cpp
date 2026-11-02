@@ -160,8 +160,11 @@ namespace
         if (!Points.IsValidIndex(Index)) return false;
         const FVtuberLandmark& Point = Points[Index];
         if (!FMath::IsFinite(Point.Visibility) || Point.Visibility < .45f) return false;
-        if (Snapshot.PoseLandmarks.IsValidIndex(Index))
+        if (!Snapshot.PoseLandmarks.IsEmpty())
         {
+            // Only an absent image frame supports the legacy metric-only API.
+            // A partial frame must not silently bypass image visibility checks.
+            if (Snapshot.PoseLandmarks.Num() != 33 || !Snapshot.PoseLandmarks.IsValidIndex(Index)) return false;
             const auto& Image = Snapshot.PoseLandmarks[Index];
             if (Image.Position.ContainsNaN() || Image.Position.X < 0 || Image.Position.X > 1 || Image.Position.Y < 0 || Image.Position.Y > 1
                 || !FMath::IsFinite(Image.Visibility) || Image.Visibility < .45f) return false;
@@ -1658,6 +1661,7 @@ bool UVtuberRigComponent::LoadProfile(const FString& Path, FString& Error)
 #include "Misc/AutomationTest.h"
 #include "Animation/Skeleton.h"
 #include "Misc/MemStack.h"
+#include <limits>
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberProxyLifecycleTest, "HonkaiVTuber.Rig.ProxyLifecycle", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FVtuberProxyLifecycleTest::RunTest(const FString& Parameters)
@@ -2499,6 +2503,62 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
         const FVector Expected = Pair.Key == TEXT("upperarm_l") ? Upper : Lower;
         TestTrue(TEXT("Anatomical arm aim survives nonidentity bind and helper parents"), FVector::DotProduct(Delta.RotateVector(Reference), Expected) > .995);
     }
+
+    // Image visibility must gate the actual arm chain, not just a direction
+    // helper. These image points only provide validity; metric aiming still
+    // comes from the same authored world-space fixture above.
+    FVtuberTrackingSnapshot ImageTracked = Bent;
+    ImageTracked.PoseLandmarks.SetNum(33);
+    for (auto& Point : ImageTracked.PoseLandmarks)
+    {
+        Point.Position = FVector(.5, .5, 0); Point.Visibility = .9f; Point.Presence = .9f;
+    }
+    auto& ImageElbow = ImageTracked.PoseLandmarks[14];
+    ImageElbow.Position.Y = 1.5; ImageElbow.Visibility = .58f;
+    ImageTracked.PoseWorldLandmarks[14].Visibility = .58f;
+    Submit(ImageTracked);
+    TestFalse(TEXT("Offscreen elbow with trusted metric data cannot drive the upper arm"), Rig->IsBodyChannelTracked(TEXT("upperarm_r")));
+    TestTrue(TEXT("An offscreen elbow leaves the other visible arm tracked"), Rig->IsBodyChannelTracked(TEXT("upperarm_l")));
+    ImageElbow.Position.Y = .8;
+    Submit(ImageTracked);
+    TestTrue(TEXT("The same metric elbow resumes driving when its image point is visible"), Rig->IsBodyChannelTracked(TEXT("upperarm_r")));
+    ImageTracked.PoseLandmarks[16].Position.Y = 1.9;
+    ImageTracked.PoseLandmarks[16].Visibility = .09f;
+    Submit(ImageTracked);
+    TestFalse(TEXT("An offscreen wrist rejects the upper arm even with a visible elbow"), Rig->IsBodyChannelTracked(TEXT("upperarm_r")));
+    ImageTracked.PoseLandmarks[16] = ImageTracked.PoseLandmarks[15];
+    ImageElbow.Visibility = .44f;
+    Submit(ImageTracked);
+    TestFalse(TEXT("Low image confidence rejects a metric-valid arm"), Rig->IsBodyChannelTracked(TEXT("upperarm_r")));
+    ImageElbow.Visibility = .58f;
+    ImageElbow.Position.X = std::numeric_limits<double>::quiet_NaN();
+    Submit(ImageTracked);
+    TestFalse(TEXT("Nonfinite image coordinates reject a metric-valid arm"), Rig->IsBodyChannelTracked(TEXT("upperarm_r")));
+    ImageElbow.Position.X = .5;
+    ImageElbow.Visibility = std::numeric_limits<float>::quiet_NaN();
+    Submit(ImageTracked);
+    TestFalse(TEXT("Nonfinite image confidence rejects a metric-valid arm"), Rig->IsBodyChannelTracked(TEXT("upperarm_r")));
+    ImageElbow.Visibility = .58f;
+    Submit(ImageTracked);
+    TestTrue(TEXT("Valid image data recovers after rejected samples"), Rig->IsBodyChannelTracked(TEXT("upperarm_r")));
+    FVtuberTrackingSnapshot PartialImage = ImageTracked;
+    PartialImage.PoseLandmarks.SetNum(13);
+    Submit(PartialImage);
+    TestFalse(TEXT("A nonempty image frame missing the elbow never falls back to metric-only arm tracking"), Rig->IsBodyChannelTracked(TEXT("upperarm_r")));
+    PartialImage = ImageTracked;
+    PartialImage.PoseLandmarks.SetNum(17);
+    Submit(PartialImage);
+    TestFalse(TEXT("A partial image frame cannot drive an arm even if its three points exist"), Rig->IsBodyChannelTracked(TEXT("upperarm_r")));
+    TestFalse(TEXT("A partial image frame cannot drive the torso from its remaining points"), Rig->IsBodyChannelTracked(TEXT("spine")));
+    PartialImage = ImageTracked;
+    PartialImage.PoseLandmarks.AddDefaulted();
+    Submit(PartialImage);
+    TestFalse(TEXT("An oversized image frame is rejected instead of being treated as official pose data"), Rig->IsBodyChannelTracked(TEXT("upperarm_r")));
+    ImageTracked.PoseLandmarks.Reset();
+    Submit(ImageTracked);
+    TestTrue(TEXT("Legacy metric-only snapshots retain arm tracking"), Rig->IsBodyChannelTracked(TEXT("upperarm_r")));
+    Submit(Bent);
+    for (int32 I = 0; I < 90; ++I) Rig->UpdateTracking(1.f / 60.f);
 
     FVtuberTrackingSnapshot Missing = Neutral; Missing.bFaceTracked = false;
     for (int32 I : {11, 12, 13, 14, 15, 16})

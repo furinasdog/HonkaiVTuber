@@ -18,11 +18,11 @@ Type-0 joints use Spring2 with all six axes enabled. Authored translation and ro
 
 The margin setting is `1e-6` world metres, matching the mature import setup. Bullet retains shape-specific sphere/capsule radius behavior; this is not a uniform outward expansion of every collider. Additional low-speed damping and one redundant locked-translation pivot constraint remain enabled.
 
-Dynamic bodies use Bullet's normal island sleeping. The old wrapper disabled deactivation on every rigid body and set sleeping thresholds to zero; its stationary kinematic colliders also kept waking their contact islands. An unchanged mode-0 target now stops and allows contacts to rest. Moving any kinematic target explicitly wakes this model's dynamic bodies, and resetting dynamic transforms wakes them before gravity resumes. No collision group, joint, source mass, damping, or Mode2 position policy is changed. This addresses persistent low-speed shoulder/clothing drift without disabling secondary physics. Bodies that do not satisfy Bullet's normal sleep criteria remain active.
+Dynamic bodies use Bullet's standard island sleeping, with the [jointed high-angular-damping threshold selection](#jointed-high-angular-damping-sleep-policy). The old wrapper disabled deactivation on every rigid body and set sleeping thresholds to zero; its stationary kinematic colliders also kept waking their contact islands. An unchanged mode-0 target now stops and allows contacts to rest. Moving any kinematic target explicitly wakes this model's dynamic bodies, and resetting dynamic transforms wakes them before gravity resumes. No collision group, joint, source mass, authored damping, or Mode2 position policy is changed. An island remains active until its bodies meet their configured sleep criteria; this does not guarantee convergence for every authored contact configuration.
 
 Contacts use Bullet's standard two-direction, velocity-independent friction basis with direction caching. The friction coefficients and contact ERP/CFM remain authored/runtime defaults. This permits the tested held poses to settle through normal sleeping; it does not make authored overlapping colliders or incompatible joint/contact limits collision-free. Source-model motion, Mode2 attachment, reset, collision filtering and CCD are checked separately from visible UE contact and rendering.
 
-Movement detection uses the float matrix ABI's machine epsilon for position and basis differences. Exact matrix comparisons had treated `7e-15` to `1.5e-8` stationary rotation roundoff as movement, resetting every body's deactivation timer each frame even after two minutes without input motion. The activation regression checks both directions: sub-epsilon roundoff keeps a resting model asleep, and a real 10-micrometre kinematic translation still wakes it. Bullet's normal sleep thresholds and solver velocities are unchanged.
+Movement detection uses the float matrix ABI's machine epsilon for position and basis differences. Exact matrix comparisons had treated `7e-15` to `1.5e-8` stationary rotation roundoff as movement, resetting every body's deactivation timer each frame even after two minutes without input motion. The activation regression checks both directions: sub-epsilon roundoff keeps a resting model asleep, and a real 10-micrometre kinematic translation still wakes it. The float movement-detection fix itself changes neither sleeping thresholds nor solver velocities; threshold selection is the separate [jointed high-angular-damping sleep policy](#jointed-high-angular-damping-sleep-policy).
 
 The runtime uses fixed 60 Hz simulation with 80 solver iterations, bounded substeps, resets after a long frame, and rebuilds for model or uniform-scale changes. Kinematic colliders follow the current animated body; physics controls hair and clothing only where the source PMX supplies suitable rigid bodies, joints and skin weights. It does not infer cloth or hair physics for models lacking those data.
 
@@ -37,5 +37,24 @@ Permanent MMD Mode2 alignment retains native solver velocity and uses the existi
 Native regressions cover real zero-stiffness damping, resting at an angular stop, and linked-only contact suppression while a separate nonlinked contact remains active. Existing fixtures and UE automation cover gravity, reset, collision groups, complete pose output, sparse compact indices and Mode2 under a simulated parent. These checks do not establish collision-free appearance or fidelity to official game physics. GPU skinning, local shoulder/arm animation, live tracking and visible hair/clothing contact remain separate checks.
 
 The native suite also checks roundoff-safe kinematic wake-up against real movement. Four unchanged source models were exercised with the same upper-body/arm motion followed by a hold at both 30FPS and 60FPS, including a hanging-hair geometry check. A Three.js-style dynamic-parent Mode2 topology conversion was tested separately but not adopted; production keeps the source Mode2 policy.
+
+## Jointed high-angular-damping sleep policy
+
+Bullet's default angular sleeping threshold remains `1` rad/s for unselected bodies. After joint construction, the runtime changes only the angular threshold to `3` rad/s for actual dynamic bodies with at least one Bullet constraint reference and an actual, already-clamped angular damping value of at least `btScalar(.9f)`:
+
+```cpp
+if (!body->isStaticOrKinematicObject()
+    && body->getNumConstraintRefs() > 0
+    && body->getAngularDamping() >= btScalar(.9f))
+{
+    body->setSleepingThresholds(body->getLinearSleepingThreshold(), btScalar(3));
+}
+```
+
+This uses standard Bullet island sleeping as a resting approximation for authored high-angular-damping, joint-constrained secondary motion. It does not eliminate incompatible source constraints or collider overlap: nonzero pivot, angular-limit and contact residuals can remain in a sleeping pose. Each body's original linear threshold (default `.8`) and the global deactivation time (`2` seconds) are retained. Original kinematic movement/reset wake-up, source data, collision filtering, joints, mass, authored damping, solver settings and permanent Mode2 alignment are unchanged. There are no character, bone-name or model-ID conditions.
+
+Local validation passed the recorded real-failure MemoryD/E native-call replays, the required motion canaries, and four-model offline 30/60FPS motion/stop, permanent-Mode2 and reset checks. Jointed zero/low-damping spinners and an unconstrained high-damping driven rotor retain threshold `1` and keep moving; applying `3` universally failed an undamped-rotation canary and is not the policy. These offline checks do not establish acceptance of continuous live SDK input or the real UE camera path.
+
+Truly held kinematic input can allow an island to sleep. Continuous SDK pose changes still use the original wake path and can repeatedly wake the dynamic bodies, so held-input convergence is not a guarantee under persistent tracker noise. The original 10-micrometre Set-transform test still wakes all dynamic bodies; resumed motion can include the remaining constraint/contact conflict, rather than preserving the input's amplitude. No input filtering or wake condition was changed.
 
 UMT is MIT, copyright Candidum Games. Bullet is distributed under its original zlib license; see `ThirdParty/Bullet-LICENSE.txt`. These licenses do not replace model or Unreal Engine licenses.
