@@ -5,7 +5,11 @@
 #include "GameFramework/GameModeBase.h"
 #include "Camera/CameraActor.h"
 #include "MmdEnhancement.h"
+#include "MmdPartVisibility.h"
 #include "Vtuber/NativeTracking.h"
+#if WITH_DEV_AUTOMATION_TESTS
+#include "MmdReplaySequence.h"
+#endif
 #include "MmdViewer.generated.h"
 
 class UVrmAssetListObject;
@@ -49,6 +53,14 @@ public:
     void RecordTrackingFrame(const FVtuberTrackingSnapshot& Snapshot);
     void ToggleSpout();
     void UpdateFaceLight();
+    const FMmdPartVisibility& GetPartVisibility() const { return PartVisibility; }
+    bool HasParts() const { return !PartVisibility.Parts().IsEmpty(); }
+    void SetPartVisibilityEnabled(bool bEnabled);
+    void SetPartHidden(const FString& Id, bool bPartHidden);
+    void RestoreParts();
+    void PreviewPart(const FString& Id = FString());
+    const FString& GetPreviewPart() const { return PreviewPartId; }
+    FString PartVisibilityNotice;
     void MoveCharacter(FVector Direction, float DeltaSeconds);
     void StopCharacterMovement() { MovementVelocity = FVector::ZeroVector; }
     FNativeTracking Tracking;
@@ -59,6 +71,10 @@ public:
 #if WITH_DEV_AUTOMATION_TESTS
     FVtuberTrackingSnapshot ReplaySnapshot;
     bool bTrackingReplay = false;
+    FMmdReplaySequence ReplaySequence;
+    double ReplayStartWorldSeconds = 0;
+    bool bReplaySequenceRequested = false;
+    int32 ReplayFrameIndex = INDEX_NONE;
 #endif
     UPROPERTY() TObjectPtr<UVtuberRigComponent> Rig;
     UPROPERTY() TObjectPtr<UVtuberOutput> Output;
@@ -87,6 +103,9 @@ private:
     bool ApplyGeneratedProfile(const FString& Directory);
     UMaterialInstanceDynamic* MakeFaceOutline(int32 Index, UTexture2D* Map);
     FMmdEnhancement Enhancement;
+    bool SavePartVisibility();
+    FMmdPartVisibility PartVisibility;
+    FString PartVisibilityPath, PreviewPartId;
     FMmdModelState ModelState;
     FMmdEnhancementRequest GenerationRequest;
     bool bGenerationPending = false;

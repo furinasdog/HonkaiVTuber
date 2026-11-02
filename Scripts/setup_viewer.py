@@ -48,6 +48,11 @@ def material(name, translucent=False, outline=False, backdrop=False, two_sided=F
         alpha = node(u.MaterialExpressionMultiply)
         connect(texture, "A", alpha, "A")
         connect(opacity, "", alpha, "B")
+        # Per-instance part visibility uses only vertex alpha; white preserves authored opacity.
+        visibility = node(u.MaterialExpressionMultiply)
+        connect(alpha, "", visibility, "A")
+        connect(node(u.MaterialExpressionVertexColor), "A", visibility, "B")
+        alpha = visibility
         output(alpha, "", u.MaterialProperty.MP_OPACITY if translucent else u.MaterialProperty.MP_OPACITY_MASK)
         if outline:
             face_mask = node(u.MaterialExpressionConstant, r=1)
@@ -232,13 +237,19 @@ def cel_lighting():
     u.log("MMD_MATERIAL_CHECK M_CelLighting before_dof=true")
 
 
+def model_materials():
+    return [
+        material("M_Toon"),
+        material("M_ToonTwoSided", two_sided=True),
+        material("M_ToonTranslucent", translucent=True),
+        material("M_ToonTranslucentTwoSided", translucent=True, two_sided=True),
+        material("M_Outline", outline=True),
+        material("M_FaceOutline", outline=True, face_outline=True),
+    ]
+
+
 def main():
-    material("M_Toon")
-    material("M_ToonTwoSided", two_sided=True)
-    material("M_ToonTranslucent", translucent=True)
-    material("M_ToonTranslucentTwoSided", translucent=True, two_sided=True)
-    material("M_Outline", outline=True)
-    material("M_FaceOutline", outline=True, face_outline=True)
+    model_materials()
     cel_lighting()
     background = material("M_Backdrop", backdrop=True)
 

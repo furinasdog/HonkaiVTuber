@@ -24,12 +24,9 @@
 
 namespace
 {
-    const FLinearColor Ink = FLinearColor::FromSRGBColor(FColor(32, 41, 56));
-    const FLinearColor Muted = FLinearColor::FromSRGBColor(FColor(102, 117, 138));
-    const FLinearColor Accent = FLinearColor::FromSRGBColor(FColor(71, 116, 170));
-    const FLinearColor Field = FLinearColor::FromSRGBColor(FColor(248, 250, 253));
-    const FLinearColor Grid = FLinearColor::FromSRGBColor(FColor(230, 235, 242));
-    const FLinearColor Warning = FLinearColor::FromSRGBColor(FColor(153, 104, 24));
+    const FLinearColor Ink = FMmdUiStyle::Colors().Text, Muted = FMmdUiStyle::Colors().Muted;
+    const FLinearColor Accent = FMmdUiStyle::Colors().Accent, Field = FMmdUiStyle::Colors().Field;
+    const FLinearColor Grid = FMmdUiStyle::Colors().Grid, Warning = FMmdUiStyle::Colors().Warning;
     const TCHAR* NoneLabel = TEXT("（未映射）");
     const FName HeadAxes[] = {TEXT("headPitch"), TEXT("headYaw"), TEXT("headRoll")};
     const FName BodyGroups[] = {TEXT("left_arm"), TEXT("right_arm"), TEXT("left_hand"), TEXT("right_hand")};
@@ -623,8 +620,9 @@ void SVtuberRigPanel::Construct(const FArguments&, UVtuberRigComponent* InRig)
             return FReply::Handled();
         })[Label(TEXT("恢复所有通道默认设置"))], 0);
 
-    ChildSlot[SNew(SBox).WidthOverride(830).HeightOverride(540)
-        [SNew(SVerticalBox)
+    ChildSlot[SNew(SBox).MaxDesiredWidth(830).HeightOverride(480)
+        [SNew(SScrollBox).Orientation(Orient_Horizontal).ScrollBarThickness(FVector2D(6, 6))
+            + SScrollBox::Slot()[SNew(SBox).MinDesiredWidth(760)[SNew(SVerticalBox)
             + SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)[Tabs]
             + SVerticalBox::Slot().FillHeight(1)
                 [SNew(SOverlay)
@@ -641,13 +639,13 @@ void SVtuberRigPanel::Construct(const FArguments&, UVtuberRigComponent* InRig)
                                                 [SNew(SScrollBox).Visibility_Lambda([this] { return SelectedTab == 1 ? EVisibility::Visible : EVisibility::Collapsed; })
                                                     + SScrollBox::Slot()[BodyRows]]]]]
                             + SHorizontalBox::Slot().FillWidth(1)
-                                [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FLinearColor::White).Padding(8)
+                                [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FMmdUiStyle::Colors().Panel).Padding(8)
                                     [SNew(SScrollBox) + SScrollBox::Slot()[Details]]]]
                     + SOverlay::Slot()
                         [SNew(SScrollBox).Visibility_Lambda([this] { return SelectedTab == 2 ? EVisibility::Visible : EVisibility::Collapsed; })
                             + SScrollBox::Slot()[Options]]]
             + SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
-                [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(SaveStatus); }).ColorAndOpacity(Muted)]]];
+                [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(SaveStatus); }).ColorAndOpacity(Muted).AutoWrapText(true)]]]]];
 }
 
 #if WITH_DEV_AUTOMATION_TESTS

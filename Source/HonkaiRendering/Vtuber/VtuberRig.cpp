@@ -12,6 +12,7 @@
 #include "VrmMetaObject.h"
 #include "VrmPmxPhysics.h"
 #include "VrmPmxPhysicsData.h"
+#include "VrmPmxBoneTransform.h"
 #include "AnimNode_VrmSpringBone.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformTime.h"
@@ -318,33 +319,70 @@ namespace
     void BuildMorphWeights(const TArray<FVtuberMorphMapping>& Mappings, const TArray<FName>& Available,
         const TMap<FName, float>& Outputs, TMap<FName, float>& MorphWeights)
     {
-        const FName EyeChannels[] = {TEXT("eyeBlinkLeft"), TEXT("eyeBlinkRight"), TEXT("eyeSquintLeft"), TEXT("eyeSquintRight"), TEXT("eyeWideLeft"), TEXT("eyeWideRight")};
-        FName Targets[6];
-        float Requested[6] = {};
+        const FName EyeChannels[] = {TEXT("eyeBlinkLeft"), TEXT("eyeBlinkRight"), TEXT("eyeSquintLeft"), TEXT("eyeSquintRight"), TEXT("eyeWideLeft"), TEXT("eyeWideRight"),
+            TEXT("eyeLookDownLeft"), TEXT("eyeLookDownRight"), TEXT("eyeLookInLeft"), TEXT("eyeLookInRight"), TEXT("eyeLookOutLeft"), TEXT("eyeLookOutRight"), TEXT("eyeLookUpLeft"), TEXT("eyeLookUpRight")};
+        constexpr int32 EyeCount = 14;
+        static const TArray<FString> CompleteMouthAliases = []
+        {
+            TArray<FString> Names{NormalizeName(TEXT("え")), NormalizeName(TEXT("エ")), TEXT("e"), TEXT("ee"), NormalizeName(TEXT("ん"))};
+            const TArray<FName> FullPoseChannels{TEXT("jawOpen"), TEXT("mouthClose"), TEXT("mouthFunnel"), TEXT("mouthPucker"),
+                TEXT("mouthSmileLeft"), TEXT("mouthSmileRight"), TEXT("mouthStretchLeft"), TEXT("mouthStretchRight"), TEXT("mouthFrownLeft"), TEXT("mouthFrownRight")};
+            for (const auto& Definition : Channels)
+            {
+                if (!FullPoseChannels.Contains(Definition.Channel)) continue;
+                TArray<FString> Aliases; FString(Definition.Aliases).ParseIntoArray(Aliases, TEXT("|"), true);
+                for (const FString& Alias : Aliases)
+                {
+                    const FString Name = NormalizeName(Alias);
+                    if (!Name.StartsWith(TEXT("mouth")) && !Name.StartsWith(TEXT("jaw")) && !Names.Contains(Name)) Names.Add(Name);
+                }
+            }
+            return Names;
+        }();
+        FName Targets[EyeCount];
+        TMap<FName, uint8> MouthSides;
+        bool bCompleteMouthPoses = false;
         for (const auto& M : Mappings)
             if (!M.Morph.IsNone() && Available.Contains(M.Morph))
             {
-                int32 EyeIndex = INDEX_NONE;
-                for (int32 Index = 0; Index < 6; ++Index) if (M.Channel == EyeChannels[Index]) EyeIndex = Index;
-                if (EyeIndex != INDEX_NONE)
-                {
-                    Targets[EyeIndex] = M.Morph;
-                    const float Value = Outputs.FindRef(M.Channel);
-                    Requested[EyeIndex] = FMath::IsFinite(Value) ? FMath::Clamp(Value, 0.f, 1.f) : 0.f;
-                    continue;
-                }
+                const float Value = Outputs.FindRef(M.Channel);
                 float& Weight = MorphWeights.FindOrAdd(M.Morph);
-                Weight = FMath::Max(Weight, Outputs.FindRef(M.Channel));
+                Weight = FMath::Max(Weight, FMath::IsFinite(Value) ? FMath::Clamp(Value, 0.f, 1.f) : 0.f);
+                for (int32 Index = 0; Index < EyeCount; ++Index) if (M.Channel == EyeChannels[Index]) Targets[Index] = M.Morph;
+                const FString Channel = M.Channel.ToString();
+                if (Channel.StartsWith(TEXT("jaw")) || Channel.StartsWith(TEXT("mouth")))
+                {
+                    // Infer the authored target's side, not merely the sensor channel:
+                    // two different bilateral smiles must still share both budgets.
+                    const bool bWholeMouth = Channel.StartsWith(TEXT("jaw")) || M.Channel == TEXT("mouthLeft") || M.Channel == TEXT("mouthRight");
+                    const FString TargetName = NormalizeName(M.Morph.ToString());
+                    const bool Left = TargetName.StartsWith(TEXT("左")) || TargetName.EndsWith(TEXT("左")) || TargetName.StartsWith(TEXT("left")) || TargetName.EndsWith(TEXT("left"));
+                    const bool Right = TargetName.StartsWith(TEXT("右")) || TargetName.EndsWith(TEXT("右")) || TargetName.StartsWith(TEXT("right")) || TargetName.EndsWith(TEXT("right"));
+                    const uint8 Sides = static_cast<uint8>(!bWholeMouth && Left && !Right ? 1 : !bWholeMouth && Right && !Left ? 2 : 3);
+                    MouthSides.FindOrAdd(M.Morph) |= Sides;
+                    bCompleteMouthPoses |= CompleteMouthAliases.Contains(TargetName);
+                }
             }
         // A shared target consumes both eyes' remaining budget. Blink has priority;
-        // squint and wide fill the remainder, keeping a convex blend of eye shapes.
+        // squint, wide and gaze fill the remainder. Read target weights after Max
+        // merging so a compound pose mapped by a mouth channel cannot bypass it.
+        float Requested[EyeCount] = {};
+        for (int32 Index = 0; Index < EyeCount; ++Index) Requested[Index] = MorphWeights.FindRef(Targets[Index]);
+        for (const auto Pair : {TPair<int32, int32>(6, 12), TPair<int32, int32>(8, 10)})
+            for (int32 Side = 0; Side < 2; ++Side)
+            {
+                const int32 A = Pair.Key + Side, B = Pair.Value + Side;
+                if (Targets[A].IsNone() || Targets[B].IsNone() || Targets[A] == Targets[B]) continue;
+                const float Opposing = FMath::Min(Requested[A], Requested[B]);
+                Requested[A] -= Opposing; Requested[B] -= Opposing;
+            }
         float Used[2] = {};
         TMap<FName, float> EyeWeights;
-        for (int32 Index = 0; Index < 6; ++Index)
+        for (int32 Index = 0; Index < EyeCount; ++Index)
         {
             if (Targets[Index].IsNone()) continue;
             bool Affects[2] = {};
-            for (int32 Other = 0; Other < 6; ++Other)
+            for (int32 Other = 0; Other < EyeCount; ++Other)
                 if (Targets[Other] == Targets[Index]) Affects[Other % 2] = true;
             float Remaining = 1.f;
             for (int32 Side = 0; Side < 2; ++Side)
@@ -354,10 +392,24 @@ namespace
             Weight += Added;
             for (int32 Side = 0; Side < 2; ++Side) if (Affects[Side]) Used[Side] += Added;
         }
-        for (const auto& Eye : EyeWeights)
+        for (const auto& Eye : EyeWeights) MorphWeights.Add(Eye.Key, Eye.Value);
+        // Recognized MMD/VRM phonemes and smiles are alternate complete poses;
+        // rigs using only native or custom FACS targets retain additive outputs.
+        // Blend alternatives instead of adding several full openings. Shared
+        // bilateral targets count once, and independent corners keep their side.
+        if (bCompleteMouthPoses)
         {
-            float& Weight = MorphWeights.FindOrAdd(Eye.Key);
-            Weight = FMath::Max(Weight, Eye.Value);
+            float Sum[2] = {};
+            for (const auto& Mouth : MouthSides)
+                for (int32 Side = 0; Side < 2; ++Side)
+                    if (Mouth.Value & (1 << Side)) Sum[Side] += MorphWeights.FindRef(Mouth.Key);
+            for (const auto& Mouth : MouthSides)
+            {
+                float Denominator = 1.f;
+                for (int32 Side = 0; Side < 2; ++Side)
+                    if (Mouth.Value & (1 << Side)) Denominator = FMath::Max(Denominator, Sum[Side]);
+                MorphWeights.FindOrAdd(Mouth.Key) /= Denominator;
+            }
         }
     }
 
@@ -487,15 +539,21 @@ namespace
             bPmxFailureReported = true;
             UE_LOG(LogTemp, Warning, TEXT("PMX_PHYSICS %s failed: %s; animated pose retained."), Stage, *Error);
         }
+        void ReportAppendFailure(const TCHAR* Stage, const FString& Error)
+        {
+            if (bPmxAppendFailureReported) return;
+            bPmxAppendFailureReported = true;
+            UE_LOG(LogTemp, Warning, TEXT("PMX_APPEND %s failed: %s; input pose retained."), Stage, *Error);
+        }
         void CachePmxPhysics(UVrmPmxPhysicsData* Data, USkeletalMesh* SkelMesh, const FTransform& ToWorld)
         {
             bHasPmxData = Data != nullptr;
             PmxComponentToWorld = ToWorld;
             const bool bNewModel = PmxData.Get() != Data || PmxMesh.Get() != SkelMesh;
             if (!bNewModel && PmxScale.Equals(ToWorld.GetScale3D(), .000001)) return;
-            if (bNewModel) bPmxFailureReported = false;
+            if (bNewModel) { bPmxFailureReported = false; bPmxAppendFailureReported = false; }
             PmxData = Data; PmxMesh = SkelMesh; PmxScale = ToWorld.GetScale3D();
-            PmxPhysics.Reset(); PmxReferencePose.Reset(); PmxParents.Reset(); bPmxNeedsPoseReset = false;
+            PmxPhysics.Reset(); PmxBoneTransform.Reset(); PmxReferencePose.Reset(); PmxParents.Reset(); bPmxNeedsPoseReset = false;
             if (!Data) return;
             if (!SkelMesh)
             {
@@ -505,8 +563,19 @@ namespace
             const FReferenceSkeleton& Ref = SkelMesh->GetRefSkeleton();
             PmxReferencePose = Ref.GetRefBonePose();
             for (int32 Index = 0; Index < Ref.GetNum(); ++Index) PmxParents.Add(Ref.GetParentIndex(Index));
-            PmxPhysics = MakeUnique<FVrmPmxPhysics>();
             FString Error;
+            if (!Data->BoneTransforms.IsEmpty())
+            {
+                PmxBoneTransform = MakeUnique<FVrmPmxBoneTransform>();
+                if (!PmxBoneTransform->Initialize(*Data, Ref, Error))
+                {
+                    ReportAppendFailure(TEXT("Initialize"), Error);
+                    PmxBoneTransform.Reset();
+                }
+            }
+            // PMX append-only skeletons have no Bullet world to initialize.
+            if (Data->RigidBodies.IsEmpty()) return;
+            PmxPhysics = MakeUnique<FVrmPmxPhysics>();
             if (!PmxPhysics->Initialize(*Data, Ref, ToWorld, Error))
             {
                 ReportPmxFailure(TEXT("Initialize"), Error);
@@ -522,7 +591,7 @@ namespace
         }
         void ApplyPmxPhysics(FPoseContext& Output)
         {
-            if (!PmxPhysics || !PmxPhysics->IsInitialized()) return;
+            if (!PmxPhysics && !PmxBoneTransform) return;
             const FBoneContainer& Bones = Output.Pose.GetBoneContainer();
             if (Bones.GetReferenceSkeleton().GetNum() != PmxReferencePose.Num())
             {
@@ -548,7 +617,12 @@ namespace
                     return;
                 }
             }
-            if (bPmxNeedsPoseReset)
+            FString Error;
+            TMap<int32, FQuat> RotationGoals;
+            for (const FBodyAnimTarget& Target : BodyTargets) RotationGoals.Add(Target.MeshBoneIndex, Target.ComponentRotation);
+            if (PmxBoneTransform && !PmxBoneTransform->EvaluateStage(false, false, Pose, Error, &RotationGoals))
+                ReportAppendFailure(TEXT("BeforePhysics"), Error);
+            if (PmxPhysics && bPmxNeedsPoseReset)
             {
                 if (!PmxPhysics->Reset(Pose, PmxComponentToWorld))
                 {
@@ -557,12 +631,13 @@ namespace
                 }
                 bPmxNeedsPoseReset = false;
             }
-            FString Error;
-            if (!PmxPhysics->Simulate(PmxDeltaSeconds, PmxComponentToWorld, Pose, Error))
+            if (PmxPhysics && !PmxPhysics->Simulate(PmxDeltaSeconds, PmxComponentToWorld, Pose, Error))
             {
                 ReportPmxFailure(TEXT("Simulate"), Error.IsEmpty() ? TEXT("The PMX simulator rejected the current frame.") : Error);
                 return;
             }
+            if (PmxBoneTransform && !PmxBoneTransform->EvaluateStage(true, PmxPhysics != nullptr, Pose, Error, &RotationGoals))
+                ReportAppendFailure(TEXT("AfterPhysics"), Error);
             TArray<FTransform> LocalPose;
             LocalPose.SetNum(Pose.Num());
             for (int32 Index = 0; Index < Pose.Num(); ++Index)
@@ -590,12 +665,14 @@ namespace
         TWeakObjectPtr<UVrmPmxPhysicsData> PmxData;
         TWeakObjectPtr<USkeletalMesh> PmxMesh;
         TUniquePtr<FVrmPmxPhysics> PmxPhysics;
+        TUniquePtr<FVrmPmxBoneTransform> PmxBoneTransform;
         TArray<FTransform> PmxReferencePose;
         TArray<int32> PmxParents;
         FTransform PmxComponentToWorld = FTransform::Identity;
         FVector PmxScale = FVector::OneVector;
         float PmxDeltaSeconds = 0.f;
         bool bHasPmxData = false, bPmxNeedsPoseReset = false, bPmxFailureReported = false;
+        bool bPmxAppendFailureReported = false;
         bool bHasSpringMeta = false;
         float SpringDeltaSeconds = 0.f;
         int32 MeshBoneIndex = INDEX_NONE;
@@ -955,6 +1032,15 @@ bool UVtuberRigComponent::SetMapping(const FVtuberMorphMapping& Mapping)
         return true;
     }
     return false;
+}
+
+FName UVtuberRigComponent::GetRecommendedMorph(FName Channel) const
+{
+    const TArray<FName> Morphs = GetAvailableMorphs();
+    for (const auto& Definition : Channels)
+        if (Channel == Definition.Channel)
+            return FindAlias(Morphs, Channel.ToString() + TEXT("|") + Definition.Aliases);
+    return NAME_None;
 }
 
 bool UVtuberRigComponent::SetHeadBone(FName Bone)
@@ -1647,6 +1733,7 @@ bool FVtuberPmxPhysicsProxyTest::RunTest(const FString& Parameters)
         Modifier.Add(FMeshBoneInfo(TEXT("pendant"), TEXT("pendant"), 0), FTransform(FVector(0, 0, 100)));
         Modifier.Add(FMeshBoneInfo(TEXT("tip"), TEXT("tip"), 2), FTransform(FVector(0, 0, 10)));
         Modifier.Add(FMeshBoneInfo(TEXT("omitted_tip"), TEXT("omitted_tip"), 3), FTransform(FVector(0, 0, 10)));
+        Modifier.Add(FMeshBoneInfo(TEXT("append_after"), TEXT("append_after"), 0), FTransform(FVector(0, 0, 50)));
     }
     auto* Asset = NewObject<USkeletalMesh>();
     Asset->SetSkeleton(Skeleton); Asset->SetRefSkeleton(Skeleton->GetReferenceSkeleton());
@@ -1666,14 +1753,21 @@ bool FVtuberPmxPhysicsProxyTest::RunTest(const FString& Parameters)
     auto& Body = Data->RigidBodies.AddDefaulted_GetRef();
     Body.BoneName = TEXT("pendant"); Body.SourceBoneIndex = 2; Body.Mode = 1; Body.Shape = 0;
     Body.Position = FVector(0, 10, 0); Body.Size = FVector(.5, 0, 0); Body.Mass = 1;
+    for (int32 I = 0; I < Asset->GetRefSkeleton().GetNum(); ++I)
+    {
+        auto& B = Data->BoneTransforms.AddDefaulted_GetRef();
+        B.BoneName = Asset->GetRefSkeleton().GetBoneName(I); B.SourceParentIndex = Asset->GetRefSkeleton().GetParentIndex(I);
+    }
+    auto& AfterRule = Data->BoneTransforms[5]; AfterRule.Flags = 0x1200; AfterRule.AppendSourceIndex = 2; AfterRule.AppendWeight = 1;
     const FQuat RootRotation = FRotator(0, 12, 0).Quaternion();
     Instance->BodyComponentRotations.Add(TEXT("root"), RootRotation);
     FVtuberAnimProxy Proxy(Instance);
     FMemMark Mark(FMemStack::Get());
     FBoneContainer Bones;
-    Bones.InitializeTo(TArray<FBoneIndexType>{0, 2, 3}, UE::Anim::FCurveFilterSettings(), *Skeleton);
+    Bones.InitializeTo(TArray<FBoneIndexType>{0, 2, 3, 5}, UE::Anim::FCurveFilterSettings(), *Skeleton);
     const auto Pendant = Bones.MakeCompactPoseIndex(FMeshPoseBoneIndex(2));
     const auto Tip = Bones.MakeCompactPoseIndex(FMeshPoseBoneIndex(3));
+    const auto Appended = Bones.MakeCompactPoseIndex(FMeshPoseBoneIndex(5));
     TestEqual(TEXT("Fixture uses sparse compact indices"), Pendant.GetInt(), 1);
     FPoseContext Output(Bones); Output.AnimInstanceProxy = &Proxy;
     auto Step = [&](float Delta)
@@ -1686,6 +1780,7 @@ bool FVtuberPmxPhysicsProxyTest::RunTest(const FString& Parameters)
     for (int32 Frame = 0; Frame < 60; ++Frame) TestTrue(TEXT("Real Bullet proxy step evaluates"), Step(1.f / 60.f));
     const FVector FallenPosition = Output.Pose[Pendant].GetLocation();
     TestTrue(TEXT("PMX gravity reaches the compact output pose"), FallenPosition.Z < 0);
+    TestTrue(TEXT("After-physics append follows actual Bullet displacement instead of stale FK"), Output.Pose[Appended].GetLocation().Equals(FallenPosition + FVector(0, 0, -50), .01));
     TestTrue(TEXT("An unsimulated child follows its dynamic parent without cancelling the fall"), Output.Pose[Tip].GetLocation().Equals(FVector(0, 0, 10), .01));
     TestTrue(TEXT("Body tracking is applied before secondary physics"), Output.Pose[FCompactPoseBoneIndex(0)].GetRotation().Equals(RootRotation, .0001));
 
@@ -1705,6 +1800,48 @@ bool FVtuberPmxPhysicsProxyTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Physics continues after a scale rebuild"), Output.Pose[Pendant].GetLocation().Z < 0);
     for (const FTransform& Transform : Output.Pose.GetBones())
         TestTrue(TEXT("Every compact transform remains finite and normalized"), !Transform.ContainsNaN() && Transform.GetRotation().IsNormalized());
+    Mesh->AnimScriptInstance = nullptr;
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberPmxAppendProxyTest, "HonkaiVTuber.Rig.PmxAppendProxy", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FVtuberPmxAppendProxyTest::RunTest(const FString& Parameters)
+{
+    auto* Skeleton = NewObject<USkeleton>();
+    {
+        FReferenceSkeletonModifier M(Skeleton);
+        M.Add(FMeshBoneInfo(TEXT("root"), TEXT("root"), INDEX_NONE), FTransform::Identity);
+        M.Add(FMeshBoneInfo(TEXT("source"), TEXT("source"), 0), FTransform(FVector(0, 0, 10)));
+        M.Add(FMeshBoneInfo(TEXT("append"), TEXT("append"), 0), FTransform(FVector(10, 0, 0)));
+        M.Add(FMeshBoneInfo(TEXT("child"), TEXT("child"), 2), FTransform(FVector(4, 0, 0)));
+        M.Add(FMeshBoneInfo(TEXT("omitted"), TEXT("omitted"), 3), FTransform(FVector(2, 0, 0)));
+    }
+    auto* Asset = NewObject<USkeletalMesh>(); Asset->SetSkeleton(Skeleton); Asset->SetRefSkeleton(Skeleton->GetReferenceSkeleton());
+    auto* Mesh = NewObject<USkeletalMeshComponent>(); Mesh->SetSkeletalMesh(Asset);
+    auto* Instance = NewObject<UVtuberAnimInstance>(Mesh); Mesh->AnimScriptInstance = Instance;
+    auto* List = NewObject<UVrmAssetListObject>(Mesh); List->SkeletalMesh = Asset;
+    auto* Data = NewObject<UVrmPmxPhysicsData>(List); List->PmxPhysicsData = Data; Instance->DstVrmAssetList = List;
+    const auto& Ref = Asset->GetRefSkeleton();
+    for (int32 I = 0; I < Ref.GetNum(); ++I)
+    {
+        auto& B = Data->BoneTransforms.AddDefaulted_GetRef(); B.BoneName = Ref.GetBoneName(I); B.SourceParentIndex = Ref.GetParentIndex(I);
+    }
+    auto& Rule = Data->BoneTransforms[2]; Rule.AppendSourceIndex = 1; Rule.AppendWeight = -.6f; Rule.Flags = 0x1100;
+    const FQuat Source = FRotator(24, -31, 18).Quaternion();
+    Instance->BodyComponentRotations.Add(TEXT("source"), Source);
+    const FQuat ChildGoal = FRotator(-8, 13, 22).Quaternion();
+    Instance->BodyComponentRotations.Add(TEXT("child"), ChildGoal);
+    FVtuberAnimProxy Proxy(Instance); Proxy.PreUpdate(Instance, 1.f / 60.f);
+    FMemMark Mark(FMemStack::Get());
+    FBoneContainer Bones; TArray<FBoneIndexType> Required{0, 1, 2, 3};
+    Bones.InitializeTo(Required, UE::Anim::FCurveFilterSettings(), *Skeleton);
+    FPoseContext Output(Bones); Output.AnimInstanceProxy = &Proxy;
+    TestTrue(TEXT("Append-only PMX evaluates through the real proxy without a Bullet world"), Proxy.Evaluate(Output));
+    const FQuat Expected = FQuat::Slerp(FQuat::Identity, Source.Inverse(), .6f).GetNormalized();
+    TestTrue(TEXT("After-physics grant follows the actual tracked bone even without rigid bodies"), Output.Pose[FCompactPoseBoneIndex(2)].GetRotation().AngularDistance(Expected) < .0001);
+    TestTrue(TEXT("The driven descendant retains its authored local attachment"), Output.Pose[FCompactPoseBoneIndex(3)].GetLocation().Equals(FVector(4, 0, 0), .0001));
+    const FQuat ChildComponent = Output.Pose[FCompactPoseBoneIndex(2)].GetRotation() * Output.Pose[FCompactPoseBoneIndex(3)].GetRotation();
+    TestTrue(TEXT("Semantic component targets are re-solved after append parents move"), ChildComponent.AngularDistance(ChildGoal) < .0001);
     Mesh->AnimScriptInstance = nullptr;
     return true;
 }
@@ -2019,11 +2156,109 @@ bool FVtuberEyeMorphBudgetTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Save custom eye mappings"), Rig->SaveProfile(Profile, Error));
     TestTrue(TEXT("Reload custom eye mappings"), Rig->LoadProfile(Profile, Error));
     TestEqual(TEXT("Saved legacy mapping remains explicit"), FindMapping(Keys[0]).Morph, FName(TEXT("ウィンク")));
+    TestEqual(TEXT("Read-only recommendation still identifies normal closure"), Rig->GetRecommendedMorph(Keys[0]), FName(TEXT("ウィンク２")));
+    TestEqual(TEXT("Reading a recommendation does not rewrite the custom mapping"), FindMapping(Keys[0]).Morph, FName(TEXT("ウィンク")));
     TestEqual(TEXT("Saved narrow range remains unchanged"), Rig->GetChannelResponse(Keys[4]).Upper, .01f);
     IFileManager::Get().Delete(*Profile);
     TestTrue(TEXT("Shared bilateral blink mapping is supported"), MapBlink(0, TEXT("まばたき")) && MapBlink(1, TEXT("まばたき")));
     Drive(.2f, .8f);
     TestTrue(TEXT("Shared bilateral blink keeps Max behavior"), FMath::IsNearlyEqual(Weight(TEXT("まばたき")), .8f));
+    Mesh->AnimScriptInstance = nullptr;
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberExpressionBlendTest, "HonkaiVTuber.Rig.CompleteExpressionBlend", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FVtuberExpressionBlendTest::RunTest(const FString& Parameters)
+{
+    auto* Skeleton = NewObject<USkeleton>();
+    {
+        FReferenceSkeletonModifier Modifier(Skeleton);
+        Modifier.Add(FMeshBoneInfo(TEXT("root"), TEXT("root"), INDEX_NONE), FTransform::Identity);
+        Modifier.Add(FMeshBoneInfo(TEXT("head"), TEXT("head"), 0), FTransform(FVector(0, 0, 40)));
+    }
+    auto* Asset = NewObject<USkeletalMesh>(); Asset->SetSkeleton(Skeleton); Asset->SetRefSkeleton(Skeleton->GetReferenceSkeleton());
+    auto AddMorph = [&](const TCHAR* Name, float LipZ, float ToothZ, uint8 EyeSides = 0, float EyeZ = -1.f)
+    {
+        auto* Morph = NewObject<UMorphTarget>(Asset, Name);
+        FMorphTargetLODModel Data; Data.NumBaseMeshVerts = 4;
+        const float Displacements[] = {LipZ, ToothZ, (EyeSides & 1) ? EyeZ : 0.f, (EyeSides & 2) ? EyeZ : 0.f};
+        for (int32 Vertex = 0; Vertex < 4; ++Vertex)
+            if (Displacements[Vertex] != 0)
+            {
+                FMorphTargetDelta Delta; Delta.SourceIdx = Vertex;
+                Delta.PositionDelta = FVector3f(0, 0, Displacements[Vertex]); Delta.TangentZDelta = FVector3f::ZeroVector;
+                Data.Vertices.Add(Delta);
+            }
+        Data.NumVertices = Data.Vertices.Num(); Morph->GetMorphLODModels().Add(Data); Asset->GetMorphTargets().Add(Morph);
+    };
+    AddMorph(TEXT("あ"), -1, -.6f); AddMorph(TEXT("い"), -.2f, -.1f); AddMorph(TEXT("う"), -.1f, -.1f); AddMorph(TEXT("お"), -.8f, -.5f); AddMorph(TEXT("にやり"), .2f, .1f);
+    AddMorph(TEXT("happy"), .2f, .1f, 3); AddMorph(TEXT("ウィンク２"), 0, 0, 1); AddMorph(TEXT("ｳｨﾝｸ２右"), 0, 0, 2);
+    AddMorph(TEXT("eyeLookUpLeft"), 0, 0, 1, .5f); AddMorph(TEXT("eyeLookDownLeft"), 0, 0, 1, -.5f);
+    const FName MouthKeys[] = {TEXT("jawOpen"), TEXT("mouthFunnel"), TEXT("mouthPucker"), TEXT("mouthSmileLeft"), TEXT("mouthSmileRight"), TEXT("mouthStretchLeft"), TEXT("mouthStretchRight")};
+    for (FName Channel : MouthKeys) AddMorph(*Channel.ToString(), -.3f, -.2f);
+    auto* Mesh = NewObject<USkeletalMeshComponent>(); Mesh->SetSkeletalMesh(Asset);
+    auto* Rig = NewObject<UVtuberRigComponent>();
+    if (!TestTrue(TEXT("Initialize complete-expression runtime seam"), Rig->Initialize(Mesh))) return false;
+    auto Map = [&](FName Channel, FName Target)
+    {
+        for (auto Mapping : Rig->GetMappings()) if (Mapping.Channel == Channel)
+        {
+            Mapping.Morph = Target; Rig->SetMapping(Mapping);
+            auto Response = Rig->GetChannelResponse(Channel); Response.Lower = 0; Response.Upper = 1; Response.SmoothingSeconds = 0;
+            return Rig->SetChannelResponse(Channel, Response);
+        }
+        return false;
+    };
+    const FName CompleteTargets[] = {TEXT("あ"), TEXT("お"), TEXT("う"), TEXT("にやり"), TEXT("にやり"), TEXT("い"), TEXT("い")};
+    for (int32 Index = 0; Index < 7; ++Index) TestTrue(TEXT("Map complete mouth pose"), Map(MouthKeys[Index], CompleteTargets[Index]));
+    auto NarrowJaw = Rig->GetChannelResponse(MouthKeys[0]); NarrowJaw.Upper = .2f; Rig->SetChannelResponse(MouthKeys[0], NarrowJaw);
+    FVtuberTrackingSnapshot Frame; Frame.bFaceTracked = true;
+    const float MouthInputs[] = {.4f, .5f, .4f, .8f, .8f, .6f, .6f};
+    for (int32 Index = 0; Index < 7; ++Index) Frame.BlendShapes.Add(MouthKeys[Index], MouthInputs[Index]);
+    auto Drive = [&] { Frame.TimestampSeconds = FPlatformTime::Seconds(); Rig->SubmitSnapshot(Frame); Rig->UpdateTracking(1.f / 60.f); };
+    auto Weight = [&](FName Name) { return Mesh->GetMorphTarget(Name); };
+    Drive();
+    float Sum = 0; for (const TCHAR* Target : {TEXT("あ"), TEXT("お"), TEXT("う"), TEXT("にやり"), TEXT("い")}) Sum += Weight(Target);
+    TestTrue(TEXT("Alternative full mouth poses have unit total weight"), FMath::IsNearlyEqual(Sum, 1.f));
+    TestTrue(*FString::Printf(TEXT("Opening retains proportional share (actual %.9g, expected %.9g)"), Weight(TEXT("あ")), 1.f / 3.3f),
+        FMath::IsNearlyEqual(Weight(TEXT("あ")), 1.f / 3.3f, 1.e-6f));
+    FVector3f DeformedLip = FVector3f::ZeroVector, DeformedTooth = FVector3f::ZeroVector;
+    for (const auto& Morph : Asset->GetMorphTargets())
+        for (const auto& Delta : Morph->GetMorphLODModels()[0].Vertices)
+        {
+            if (Delta.SourceIdx == 0) DeformedLip += Delta.PositionDelta * Weight(Morph->GetFName());
+            if (Delta.SourceIdx == 1) DeformedTooth += Delta.PositionDelta * Weight(Morph->GetFName());
+        }
+    TestTrue(TEXT("Lower lip remains inside the authored complete-pose envelope"), DeformedLip.Z >= -1.f - .00001f && DeformedLip.Z <= .2f + .00001f);
+    TestTrue(TEXT("Tooth remains inside the authored complete-pose envelope"), DeformedTooth.Z >= -.6f - .00001f && DeformedTooth.Z <= .1f + .00001f);
+    TestEqual(TEXT("Mixing does not rewrite calibrated jaw response"), Rig->GetChannelResponse(MouthKeys[0]).Upper, .2f);
+    Frame.BlendShapes.Reset(); Frame.BlendShapes.Add(TEXT("mouthSmileLeft"), .2f); Frame.BlendShapes.Add(TEXT("mouthSmileRight"), .8f); Drive();
+    TestTrue(TEXT("Shared bilateral mouth shape counts once using Max"), FMath::IsNearlyEqual(Weight(TEXT("にやり")), .8f));
+
+    for (FName Channel : {FName(TEXT("eyeBlinkLeft")), FName(TEXT("eyeBlinkRight"))})
+        TestTrue(TEXT("Map closure"), Map(Channel, Channel == TEXT("eyeBlinkLeft") ? TEXT("ウィンク２") : TEXT("ｳｨﾝｸ２右")));
+    for (FName Channel : {FName(TEXT("eyeSquintLeft")), FName(TEXT("eyeSquintRight")), FName(TEXT("mouthSmileLeft")), FName(TEXT("mouthSmileRight"))})
+        TestTrue(TEXT("Map compound face expression"), Map(Channel, TEXT("happy")));
+    TestTrue(TEXT("Map upward gaze"), Map(TEXT("eyeLookUpLeft"), TEXT("eyeLookUpLeft")));
+    TestTrue(TEXT("Map downward gaze"), Map(TEXT("eyeLookDownLeft"), TEXT("eyeLookDownLeft")));
+    Frame.BlendShapes.Reset();
+    Frame.BlendShapes.Add(TEXT("eyeBlinkLeft"), 1); Frame.BlendShapes.Add(TEXT("eyeBlinkRight"), 1);
+    Frame.BlendShapes.Add(TEXT("mouthSmileLeft"), 1); Frame.BlendShapes.Add(TEXT("eyeLookUpLeft"), .8f);
+    Drive();
+    TestEqual(TEXT("Compound expression from a mouth channel cannot bypass eye closure budget"), Weight(TEXT("happy")), 0.f);
+    TestEqual(TEXT("Closed eyelid suppresses overlapping gaze shape"), Weight(TEXT("eyeLookUpLeft")), 0.f);
+    Frame.BlendShapes.Reset(); Frame.BlendShapes.Add(TEXT("eyeLookUpLeft"), .8f); Frame.BlendShapes.Add(TEXT("eyeLookDownLeft"), .3f); Drive();
+    TestTrue(TEXT("Opposite gaze resolves to a continuous signed difference"), FMath::IsNearlyEqual(Weight(TEXT("eyeLookUpLeft")), .5f));
+    TestEqual(TEXT("Opposite gaze does not leave a second full pose active"), Weight(TEXT("eyeLookDownLeft")), 0.f);
+
+    for (FName Channel : MouthKeys) TestTrue(TEXT("Map native additive FACS target"), Map(Channel, Channel));
+    Frame.BlendShapes.Reset();
+    for (int32 Index = 0; Index < 7; ++Index) Frame.BlendShapes.Add(MouthKeys[Index], MouthInputs[Index]);
+    Drive();
+    TestTrue(TEXT("Pure FACS jaw remains additive"), FMath::IsNearlyEqual(Weight(TEXT("jawOpen")), .4f));
+    TestTrue(TEXT("Pure FACS funnel remains additive"), FMath::IsNearlyEqual(Weight(TEXT("mouthFunnel")), .5f));
+    TestTrue(TEXT("Native unilateral mouth channels keep independent amplitudes"), FMath::IsNearlyEqual(Weight(TEXT("mouthSmileLeft")), .8f) && FMath::IsNearlyEqual(Weight(TEXT("mouthSmileRight")), .8f));
+    TestEqual(TEXT("Changing mappings clears the previous complete pose"), Weight(TEXT("あ")), 0.f);
     Mesh->AnimScriptInstance = nullptr;
     return true;
 }

@@ -17,10 +17,10 @@
 
 namespace
 {
-    const FLinearColor CalInk = FLinearColor::FromSRGBColor(FColor(32, 41, 56));
-    const FLinearColor CalMuted = FLinearColor::FromSRGBColor(FColor(102, 117, 138));
-    const FLinearColor CalField = FLinearColor::FromSRGBColor(FColor(248, 250, 253));
-    const FLinearColor CalAccent = FLinearColor::FromSRGBColor(FColor(71, 116, 170));
+    const FLinearColor CalInk = FMmdUiStyle::Colors().Text;
+    const FLinearColor CalMuted = FMmdUiStyle::Colors().Muted;
+    const FLinearColor CalField = FMmdUiStyle::Colors().Field;
+    const FLinearColor CalAccent = FMmdUiStyle::Colors().Accent;
     const TCHAR* CalNoMorph = TEXT("（未映射，仅校准输入）");
 
     int32 CalIndex(EVtuberCalibrationStep Step) { return static_cast<int32>(Step); }
@@ -37,11 +37,18 @@ namespace
     }
     FString CalChannelLabel(FName Channel)
     {
-        if (Channel == TEXT("jawOpen")) return TEXT("张嘴");
-        if (Channel == TEXT("mouthSmileLeft")) return TEXT("左嘴角");
-        if (Channel == TEXT("mouthSmileRight")) return TEXT("右嘴角");
-        if (Channel == TEXT("eyeBlinkLeft")) return TEXT("左眨眼");
-        return TEXT("右眨眼");
+        const TMap<FName, FString> Labels{
+            {TEXT("jawOpen"),TEXT("张嘴")},{TEXT("mouthSmileLeft"),TEXT("左嘴角上扬")},{TEXT("mouthSmileRight"),TEXT("右嘴角上扬")},
+            {TEXT("eyeBlinkLeft"),TEXT("左眨眼")},{TEXT("eyeBlinkRight"),TEXT("右眨眼")},
+            {TEXT("mouthPucker"),TEXT("嘟嘴")},{TEXT("mouthFunnel"),TEXT("O 形嘴")},
+            {TEXT("mouthStretchLeft"),TEXT("左咧嘴")},{TEXT("mouthStretchRight"),TEXT("右咧嘴")},
+            {TEXT("mouthLeft"),TEXT("嘴向左")},{TEXT("mouthRight"),TEXT("嘴向右")},
+            {TEXT("eyeSquintLeft"),TEXT("左眯眼")},{TEXT("eyeSquintRight"),TEXT("右眯眼")},
+            {TEXT("eyeWideLeft"),TEXT("左睁大")},{TEXT("eyeWideRight"),TEXT("右睁大")},
+            {TEXT("browInnerUp"),TEXT("眉心抬高")},{TEXT("browOuterUpLeft"),TEXT("左眉抬高")},{TEXT("browOuterUpRight"),TEXT("右眉抬高")},
+            {TEXT("browDownLeft"),TEXT("左压眉")},{TEXT("browDownRight"),TEXT("右压眉")},{TEXT("mouthClose"),TEXT("合紧双唇")}};
+        if (const auto* Label = Labels.Find(Channel)) return *Label;
+        return Channel.ToString();
     }
     TSharedRef<STextBlock> CalLabel(const FString& Text, int32 Size = 14, FLinearColor Color = CalInk)
     {
@@ -59,36 +66,32 @@ namespace
         return A.Channel == B.Channel && A.Morph == B.Morph && A.Curve.Start == B.Curve.Start && A.Curve.Full == B.Curve.Full
             && A.Maximum == B.Maximum && A.Sensitivity == B.Sensitivity && A.bEnabled == B.bEnabled && A.bInvert == B.bInvert;
     }
-    // Preserve any valid existing target. Missing targets may use generic PMX/VRM
-    // vocabulary; no character/model name or material index participates.
-    FName CalMatchMorph(FName Channel, const TArray<FName>& Available)
-    {
-        FString Aliases;
-        if (Channel == TEXT("jawOpen")) Aliases = TEXT("jawOpen|mouthOpen|あ|あ２|ア|aa|张嘴|口開け");
-        else if (Channel == TEXT("mouthSmileLeft")) Aliases = TEXT("mouthSmileLeft|mouthSmileL|にやり左|微笑左|口角上げ左|にやり|口角上げ|微笑|happy|joy");
-        else if (Channel == TEXT("mouthSmileRight")) Aliases = TEXT("mouthSmileRight|mouthSmileR|にやり右|微笑右|口角上げ右|にやり|口角上げ|微笑|happy|joy");
-        else if (Channel == TEXT("eyeBlinkLeft")) Aliases = TEXT("eyeBlinkLeft|blinkL|まばたき左|左眨眼|ウィンク２|ｳｨﾝｸ２|まばたき|blink");
-        else Aliases = TEXT("eyeBlinkRight|blinkR|まばたき右|右眨眼|ウィンク２右|ｳｨﾝｸ２右|まばたき|blink");
-        TArray<FString> Candidates;
-        Aliases.ParseIntoArray(Candidates, TEXT("|"), true);
-        for (const FString& Candidate : Candidates)
-            for (FName Morph : Available) if (Morph.ToString().Equals(Candidate, ESearchCase::IgnoreCase)) return Morph;
-        return NAME_None;
-    }
+
 }
 
 const TArray<FName>& FVtuberCalibrationSession::RequiredChannels(EVtuberCalibrationStep Step)
 {
-    static const TArray<FName> Neutral{TEXT("jawOpen"), TEXT("mouthSmileLeft"), TEXT("mouthSmileRight")};
-    static const TArray<FName> Mouth{TEXT("jawOpen")};
-    static const TArray<FName> Smile{TEXT("mouthSmileLeft"), TEXT("mouthSmileRight")};
-    static const TArray<FName> Eyes{TEXT("eyeBlinkLeft"), TEXT("eyeBlinkRight")};
+    static const TArray<TArray<FName>> Channels{
+        {TEXT("jawOpen"),TEXT("mouthSmileLeft"),TEXT("mouthSmileRight"),TEXT("mouthPucker"),TEXT("mouthFunnel"),
+         TEXT("mouthStretchLeft"),TEXT("mouthStretchRight"),TEXT("mouthLeft"),TEXT("mouthRight"),TEXT("mouthClose"),
+         TEXT("browInnerUp"),TEXT("browOuterUpLeft"),TEXT("browOuterUpRight"),TEXT("browDownLeft"),TEXT("browDownRight")},
+        {TEXT("jawOpen")}, {TEXT("mouthSmileLeft"),TEXT("mouthSmileRight")},
+        {TEXT("eyeBlinkLeft"),TEXT("eyeBlinkRight"),TEXT("eyeSquintLeft"),TEXT("eyeSquintRight"),TEXT("eyeWideLeft"),TEXT("eyeWideRight")},
+        {TEXT("eyeBlinkLeft"),TEXT("eyeBlinkRight")}, {TEXT("mouthPucker")}, {TEXT("mouthFunnel")},
+        {TEXT("mouthStretchLeft"),TEXT("mouthStretchRight")}, {TEXT("mouthLeft")}, {TEXT("mouthRight")},
+        {TEXT("eyeSquintLeft"),TEXT("eyeSquintRight")}, {TEXT("eyeWideLeft"),TEXT("eyeWideRight")},
+        {TEXT("browInnerUp"),TEXT("browOuterUpLeft"),TEXT("browOuterUpRight")},
+        {TEXT("browDownLeft"),TEXT("browDownRight")}, {TEXT("mouthClose")}};
     static const TArray<FName> Empty;
-    if (Step == EVtuberCalibrationStep::RelaxedMouth) return Neutral;
-    if (Step == EVtuberCalibrationStep::OpenMouth) return Mouth;
-    if (Step == EVtuberCalibrationStep::Smile) return Smile;
-    if (Step == EVtuberCalibrationStep::OpenEyes || Step == EVtuberCalibrationStep::ClosedEyes) return Eyes;
-    return Empty;
+    return Channels.IsValidIndex(CalIndex(Step)) ? Channels[CalIndex(Step)] : Empty;
+}
+
+namespace
+{
+    bool CalIsNeutral(EVtuberCalibrationStep Step)
+    { return Step == EVtuberCalibrationStep::RelaxedMouth || Step == EVtuberCalibrationStep::OpenEyes; }
+    int32 CalNeutralIndex(EVtuberCalibrationStep Step)
+    { return Step == EVtuberCalibrationStep::ClosedEyes || Step == EVtuberCalibrationStep::Squint || Step == EVtuberCalibrationStep::Wide ? 3 : 0; }
 }
 
 void FVtuberCalibrationSession::Reset()
@@ -99,15 +102,15 @@ void FVtuberCalibrationSession::Reset()
 
 void FVtuberCalibrationSession::RewindTo(EVtuberCalibrationStep Step)
 {
-    if (CalIndex(Step) < 0 || CalIndex(Step) >= 5) return;
-    for (int32 I = CalIndex(Step); I < 5; ++I) Steps[I] = FSamples();
+    if (CalIndex(Step) < 0 || CalIndex(Step) >= StepCount) return;
+    for (int32 I = CalIndex(Step); I < StepCount; ++I) Steps[I] = FSamples();
     Current = Step; bCollecting = false;
 }
 
 bool FVtuberCalibrationSession::BeginStep(EVtuberCalibrationStep Step, double AfterTimestamp)
 {
-    if (CalIndex(Step) < 0 || CalIndex(Step) >= 5 || !FMath::IsFinite(AfterTimestamp) || AfterTimestamp < 0) return false;
-    for (int32 I = 0; I < CalIndex(Step); ++I) if (!Steps[I].bComplete) return false;
+    if (CalIndex(Step) < 0 || CalIndex(Step) >= StepCount || !FMath::IsFinite(AfterTimestamp) || AfterTimestamp < 0) return false;
+    for (int32 I = 0; I < CalIndex(Step); ++I) if (!Steps[I].bComplete && !Steps[I].bSkipped) return false;
     RewindTo(Step);
     LastTimestamp = FMath::Max(LastTimestamp, AfterTimestamp);
     bCollecting = true;
@@ -158,11 +161,23 @@ float FVtuberCalibrationSession::GetProgress() const
 }
 bool FVtuberCalibrationSession::IsComplete(EVtuberCalibrationStep Step) const
 {
-    return CalIndex(Step) >= 0 && CalIndex(Step) < 5 && Steps[CalIndex(Step)].bComplete;
+    return CalIndex(Step) >= 0 && CalIndex(Step) < StepCount && (Steps[CalIndex(Step)].bComplete || Steps[CalIndex(Step)].bSkipped);
+}
+bool FVtuberCalibrationSession::IsSkipped(EVtuberCalibrationStep Step) const
+{
+    return CalIndex(Step) >= 0 && CalIndex(Step) < StepCount && Steps[CalIndex(Step)].bSkipped;
+}
+bool FVtuberCalibrationSession::SkipStep(EVtuberCalibrationStep Step)
+{
+    if (CalIndex(Step) < 5 || CalIndex(Step) >= StepCount) return false;
+    for (int32 I = 0; I < CalIndex(Step); ++I) if (!Steps[I].bComplete && !Steps[I].bSkipped) return false;
+    RewindTo(Step);
+    Steps[CalIndex(Step)].bSkipped = true;
+    return true;
 }
 bool FVtuberCalibrationSession::IsReady() const
 {
-    for (const FSamples& Sample : Steps) if (!Sample.bComplete) return false;
+    for (const FSamples& Sample : Steps) if (!Sample.bComplete && !Sample.bSkipped) return false;
     return true;
 }
 
@@ -196,8 +211,8 @@ bool FVtuberCalibrationSession::CompleteStep(FString& Error)
         const TArray<float>& Values = Sample.Values.FindChecked(Channel);
         if (!CalValidSamples(Values) || CalQuantile(Values, .9f) - CalQuantile(Values, .1f) > .18f)
         { bCollecting = false; Error = TEXT("表情变化不够稳定，请保持动作后重新记录。"); return false; }
-        const int32 NeutralStep = Current == EVtuberCalibrationStep::ClosedEyes ? 3 : 0;
-        if (Current == EVtuberCalibrationStep::OpenMouth || Current == EVtuberCalibrationStep::Smile || Current == EVtuberCalibrationStep::ClosedEyes)
+        const int32 NeutralStep = CalNeutralIndex(Current);
+        if (!CalIsNeutral(Current))
         {
             FVtuberThresholdCurve Test;
             if (!FitRange(Steps[NeutralStep].Values.FindChecked(Channel), Values, Test, Error))
@@ -213,13 +228,16 @@ bool FVtuberCalibrationSession::BuildRanges(TMap<FName, FVtuberThresholdCurve>& 
     Error.Reset();
     if (!IsReady()) { Error = TEXT("请先完成全部记录步骤。"); return false; }
     TMap<FName, FVtuberThresholdCurve> Proposed;
-    for (int32 ActiveStep : {1, 2, 4})
+    for (int32 ActiveStep = 1; ActiveStep < StepCount; ++ActiveStep)
+    {
+        if (CalIsNeutral(static_cast<EVtuberCalibrationStep>(ActiveStep)) || Steps[ActiveStep].bSkipped) continue;
         for (FName Channel : RequiredChannels(static_cast<EVtuberCalibrationStep>(ActiveStep)))
         {
             FVtuberThresholdCurve Range;
-            if (!FitRange(Steps[ActiveStep == 4 ? 3 : 0].Values.FindChecked(Channel), Steps[ActiveStep].Values.FindChecked(Channel), Range, Error)) return false;
+            if (!FitRange(Steps[CalNeutralIndex(static_cast<EVtuberCalibrationStep>(ActiveStep))].Values.FindChecked(Channel), Steps[ActiveStep].Values.FindChecked(Channel), Range, Error)) return false;
             Proposed.Add(Channel, Range);
         }
+    }
     Ranges = MoveTemp(Proposed);
     return true;
 }
@@ -265,12 +283,12 @@ bool SVtuberCalibrationWizard::ApplyAndSave(UVtuberRigComponent& Target, const T
 
 void SVtuberCalibrationWizard::Construct(const FArguments& Args, UVtuberRigComponent* InRig)
 {
-    Rig = InRig; SnapshotSource = Args._GetSnapshot; TrackingSource = Args._IsTracking; Finished = Args._OnFinished;
+    Rig = InRig; SnapshotSource = Args._GetSnapshot; TrackingSource = Args._IsTracking; MirroredSource = Args._IsMirrored; Finished = Args._OnFinished;
     ProgressStyle = FCoreStyle::Get().GetWidgetStyle<FProgressBarStyle>(TEXT("ProgressBar"));
     ProgressStyle.SetBackgroundImage(FSlateRoundedBoxBrush(CalField, 3.f))
         .SetFillImage(FSlateRoundedBoxBrush(CalAccent, 3.f));
-    ChildSlot [SNew(SBox).MinDesiredWidth(600).MaxDesiredWidth(790)
-        [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush(TEXT("WhiteBrush"))).BorderBackgroundColor(FLinearColor::White).Padding(20)
+    ChildSlot [SNew(SBox).MaxDesiredWidth(790)
+        [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush(TEXT("WhiteBrush"))).BorderBackgroundColor(FMmdUiStyle::Colors().Panel).Padding(20)
             [SAssignNew(Body, SVerticalBox)]]];
     Status = TEXT("按提示记录表情。完成前不会修改映射。");
     LastTickTime = FPlatformTime::Seconds();
@@ -328,18 +346,34 @@ void SVtuberCalibrationWizard::Tick(const FGeometry& Geometry, double CurrentTim
 
 FText SVtuberCalibrationWizard::StepTitle() const
 {
-    static const TCHAR* Titles[]{TEXT("放松闭嘴"), TEXT("舒适张嘴"), TEXT("嘴角上扬"), TEXT("自然睁眼"), TEXT("双眼闭合"), TEXT("检查校准建议")};
+    static const TCHAR* Titles[]{TEXT("放松闭嘴"), TEXT("舒适张嘴"), TEXT("嘴角上扬"), TEXT("自然睁眼"), TEXT("双眼闭合"), TEXT("嘟嘴"), TEXT("O 形嘴"), TEXT("咧嘴"), TEXT("嘴向左"), TEXT("嘴向右"), TEXT("轻轻眯眼"), TEXT("舒适睁大双眼"), TEXT("抬高眉毛"), TEXT("轻轻皱眉"), TEXT("合紧双唇"), TEXT("检查校准建议")};
     return FText::FromString(Titles[CalIndex(Step)]);
 }
 FText SVtuberCalibrationWizard::StepInstruction() const
 {
+    if (Step == EVtuberCalibrationStep::MouthLeft || Step == EVtuberCalibrationStep::MouthRight)
+    {
+        const bool bPhysicalLeft = (Step == EVtuberCalibrationStep::MouthLeft) != MirroredSource.Get(false);
+        return FText::FromString(FString::Printf(TEXT("保持头不动，让嘴部轻轻偏向你自己的%s侧。%s"),
+            bPhysicalLeft ? TEXT("左") : TEXT("右"), MirroredSource.Get(false) ? TEXT("已按镜像输入调整引导方向。") : TEXT("")));
+    }
     static const TCHAR* Instructions[]{
         TEXT("双唇自然合拢，放松嘴角。准备好后开始记录，并保持至少1秒。"),
         TEXT("张嘴到平时说话时舒适的幅度，无需张到极限。保持动作后记录。"),
         TEXT("闭嘴并自然微笑，让两侧嘴角上扬。保持笑容后记录。"),
         TEXT("恢复放松表情，正常睁眼并看向镜头。无需睁大眼睛。"),
         TEXT("自然闭合双眼并保持，不要用力挤眼。记录完成后再睁眼。"),
-        TEXT("勾选要应用的通道，检查模型表情目标。应用前可以返回重录。")};
+        TEXT("双唇自然向前收拢，做嘟嘴动作，保持舒适幅度。"),
+        TEXT("发出 O 音的口型，嘴唇成圆形，保持动作后记录。"),
+        TEXT("发出 I 音，双唇向两侧舒展，不需要用力露齿。"),
+        TEXT("保持头不动，让嘴部轻轻偏向你自己的左侧。"),
+        TEXT("保持头不动，让嘴部轻轻偏向你自己的右侧。"),
+        TEXT("双眼保持少量开度，轻轻眯眼，不要完全闭合。"),
+        TEXT("双眼舒适睁大并看向镜头，不需要用力瞪眼。"),
+        TEXT("轻轻抬高两侧眉毛，保持面部其余部分放松。"),
+        TEXT("轻轻皱眉，压低眉毛，避免用力挤眼。"),
+        TEXT("轻轻合紧双唇，保持自然力度。追踪器不支持时可跳过。"),
+        TEXT("逐项检查旧目标、推荐目标和输入范围。取消勾选会保留该通道原有设置。")};
     return FText::FromString(Instructions[CalIndex(Step)]);
 }
 
@@ -349,7 +383,7 @@ void SVtuberCalibrationWizard::RebuildBody()
     Body->AddSlot().AutoHeight().Padding(0, 0, 0, 6)
         [SNew(STextBlock).Text(StepTitle()).Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 20)).ColorAndOpacity(CalInk)];
     Body->AddSlot().AutoHeight().Padding(0, 0, 0, 18)
-        [CalLabel(Step == EVtuberCalibrationStep::Review ? TEXT("记录已完成") : FString::Printf(TEXT("步骤 %d / 5"), CalIndex(Step) + 1), 12, CalMuted)];
+        [CalLabel(Step == EVtuberCalibrationStep::Review ? TEXT("记录已完成") : FString::Printf(TEXT("步骤 %d / %d"), CalIndex(Step) + 1, FVtuberCalibrationSession::StepCount), 12, CalMuted)];
     Body->AddSlot().AutoHeight().Padding(0, 0, 0, 16)
         [SNew(STextBlock).Text(StepInstruction()).Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 14)).ColorAndOpacity(CalInk).AutoWrapText(true)];
     if (Step == EVtuberCalibrationStep::Review) BuildReview();
@@ -370,30 +404,34 @@ void SVtuberCalibrationWizard::RebuildBody()
                     + SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
                         [CalLabel(TEXT("开始后预留1.5秒准备时间，随后保持表情至少1秒。"), 12, CalMuted)]]];
         Body->AddSlot().AutoHeight().Padding(0, 0, 0, 12)
-            [SNew(SButton).ButtonStyle(&FMmdUiStyle::Get().Primary).HAlign(HAlign_Center).ContentPadding(FMargin(16, 9))
+            [SNew(SButton).ButtonStyle(&FMmdUiStyle::Get().Primary).HAlign(HAlign_Center).VAlign(VAlign_Center).ContentPadding(FMargin(16, 9))
                 .IsEnabled_Lambda([this] { return CanRecord() && !bPreparing && !Session.IsCollecting(); }).OnClicked(this, &SVtuberCalibrationWizard::Record)
                 [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Session.GetFrameCount() > 0 ? TEXT("重新记录本步") : TEXT("开始记录")); })
                     .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 14))]];
     }
+    if (CalIndex(Step) >= 5 && Step != EVtuberCalibrationStep::Review)
+        Body->AddSlot().AutoHeight().Padding(0, 0, 0, 10)
+            [SNew(SButton).ButtonStyle(&FMmdUiStyle::Get().Button).HAlign(HAlign_Center).VAlign(VAlign_Center).ContentPadding(FMargin(12, 7))
+                .OnClicked(this, &SVtuberCalibrationWizard::Skip)[CalLabel(TEXT("跳过此项，保留原设置"), 13)]];
     Body->AddSlot().AutoHeight().Padding(0, 6, 0, 14)
         [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Status); }).Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 13))
             .ColorAndOpacity(CalMuted).AutoWrapText(true)];
     Body->AddSlot().AutoHeight()
         [SNew(SHorizontalBox)
             + SHorizontalBox::Slot().AutoWidth()
-                [SNew(SButton).ButtonStyle(&FMmdUiStyle::Get().Button).HAlign(HAlign_Center).ContentPadding(FMargin(16, 9))
+                [SNew(SButton).ButtonStyle(&FMmdUiStyle::Get().Button).HAlign(HAlign_Center).VAlign(VAlign_Center).ContentPadding(FMargin(16, 9))
                     .OnClicked(this, &SVtuberCalibrationWizard::Cancel)
                     [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(bApplied ? TEXT("关闭") : TEXT("取消")); })
                         .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 14)).ColorAndOpacity(CalInk)]]
             + SHorizontalBox::Slot().FillWidth(1)[SNew(SBox)]
             + SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 8, 0)
-                [SNew(SButton).ButtonStyle(&FMmdUiStyle::Get().Button).HAlign(HAlign_Center).ContentPadding(FMargin(16, 9))
+                [SNew(SButton).ButtonStyle(&FMmdUiStyle::Get().Button).HAlign(HAlign_Center).VAlign(VAlign_Center).ContentPadding(FMargin(16, 9))
                     .IsEnabled_Lambda([this] { return CalIndex(Step) > 0 && !bApplied; }).OnClicked(this, &SVtuberCalibrationWizard::Back)
                     [SNew(STextBlock).Text(FText::FromString(TEXT("上一步")))
                         .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 14)).ColorAndOpacity(CalInk)]]
             + SHorizontalBox::Slot().AutoWidth()
-                [SNew(SButton).ButtonStyle(&FMmdUiStyle::Get().Primary).HAlign(HAlign_Center).ContentPadding(FMargin(16, 9))
-                    .IsEnabled_Lambda([this] { return !bApplied && (Step == EVtuberCalibrationStep::Review ? Changes.Num() > 0 : Session.IsComplete(Step) && CanRecord()); })
+                [SNew(SButton).ButtonStyle(&FMmdUiStyle::Get().Primary).HAlign(HAlign_Center).VAlign(VAlign_Center).ContentPadding(FMargin(16, 9))
+                    .IsEnabled_Lambda([this] { return !bApplied && (Step == EVtuberCalibrationStep::Review ? Changes.Num() > 0 : Session.IsComplete(Step) && (Session.IsSkipped(Step) || CanRecord())); })
                     .OnClicked_Lambda([this] { return Step == EVtuberCalibrationStep::Review ? Apply() : Next(); })
                     [SNew(STextBlock).Text(FText::FromString(Step == EVtuberCalibrationStep::Review ? TEXT("应用并保存") : TEXT("下一步")))
                         .Font(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 14))]]];
@@ -407,10 +445,11 @@ void SVtuberCalibrationWizard::BuildReview()
     if (!Session.BuildRanges(Ranges, Status)) return;
     const auto Available = Rig->GetAvailableMorphs();
     for (FName Morph : Available) MorphOptions.Add(MakeShared<FString>(Morph.ToString()));
-    const FName Order[]{TEXT("jawOpen"), TEXT("mouthSmileLeft"), TEXT("mouthSmileRight"), TEXT("eyeBlinkLeft"), TEXT("eyeBlinkRight")};
+    const TArray<FName> Order = UVtuberRigComponent::GetTrackingChannels();
     TSharedRef<SVerticalBox> Rows = SNew(SVerticalBox);
     for (FName Channel : Order)
     {
+        if (!Ranges.Contains(Channel)) continue;
         const auto* Mapping = Rig->GetMappings().FindByPredicate([&](const auto& M) { return M.Channel == Channel; });
         if (!Mapping) continue;
         FVtuberCalibrationChange Change;
@@ -424,7 +463,9 @@ void SVtuberCalibrationWizard::BuildReview()
         Change.AfterMapping.Curve = FVtuberThresholdCurve();
         Change.AfterMapping.Maximum = Change.AfterMapping.Sensitivity = 1;
         Change.AfterMapping.bEnabled = true; Change.AfterMapping.bInvert = false;
-        if (!Available.Contains(Change.AfterMapping.Morph)) Change.AfterMapping.Morph = CalMatchMorph(Channel, Available);
+        const FName Recommended = Rig->GetRecommendedMorph(Channel);
+        if (!Available.Contains(Change.AfterMapping.Morph) || ((Channel == TEXT("eyeBlinkLeft") || Channel == TEXT("eyeBlinkRight")) && !Recommended.IsNone()))
+            Change.AfterMapping.Morph = Recommended;
         const int32 I = Changes.Add(Change);
         Rows->AddSlot().AutoHeight().Padding(0, 0, 0, 10)
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush(TEXT("WhiteBrush"))).BorderBackgroundColor(CalField).Padding(12)
@@ -440,6 +481,8 @@ void SVtuberCalibrationWizard::BuildReview()
                             + SHorizontalBox::Slot().AutoWidth()
                                 [CalLabel(FString::Printf(TEXT("原 %.3f–%.3f，建议 %.3f–%.3f"), Change.BeforeResponse.Lower, Change.BeforeResponse.Upper,
                                     Change.AfterResponse.Lower, Change.AfterResponse.Upper), 13, CalMuted)]]
+                    + SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+                        [CalLabel(TEXT("原目标：") + (Change.BeforeMapping.Morph.IsNone() ? FString(CalNoMorph) : Change.BeforeMapping.Morph.ToString()), 12, CalMuted)]
                     + SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
                         [SNew(SComboBox<TSharedPtr<FString>>).ComboBoxStyle(&FMmdUiStyle::Get().Combo).ItemStyle(&FMmdUiStyle::Get().Row).OptionsSource(&MorphOptions)
                             .IsEnabled_Lambda([this] { return !bApplied; })
@@ -452,7 +495,7 @@ void SVtuberCalibrationWizard::BuildReview()
     Body->AddSlot().MaxHeight(360).Padding(0, 0, 0, 12)[SNew(SScrollBox) + SScrollBox::Slot()[Rows]];
     Body->AddSlot().AutoHeight().Padding(0, 0, 0, 8)
         [CalLabel(TEXT("所选通道将启用线性校准范围，灵敏度设为1并重置附加曲线。未映射的通道只保存输入范围，可在上方选择模型表情。"), 12, CalMuted)];
-    Body->AddSlot().AutoHeight()[CalLabel(TEXT("睁大眼、眯眼和其他未采集通道保持当前设置。"), 12, CalMuted)];
+    Body->AddSlot().AutoHeight()[CalLabel(TEXT("跳过和未勾选通道保持原设置。眨眼默认推荐普通闭眼；应用前可在列表中保留原目标。"), 12, CalMuted)];
     if (!Rig->GetSettings().bExpressionsEnabled)
         Body->AddSlot().AutoHeight().Padding(0, 8, 0, 0)[CalLabel(TEXT("表情驱动当前已关闭；校准后可在捕捉设置中开启。"), 12, CalMuted)];
     Status = TEXT("尚未应用。取消会保留当前全部设置。");
@@ -468,12 +511,18 @@ FReply SVtuberCalibrationWizard::Record()
 }
 FReply SVtuberCalibrationWizard::Next()
 {
-    if (!Session.IsComplete(Step) || !CanRecord()) { Status = TEXT("请先完成有效的面部记录。"); return FReply::Handled(); }
+    if (!Session.IsComplete(Step) || (!Session.IsSkipped(Step) && !CanRecord())) { Status = TEXT("请先完成有效的面部记录。"); return FReply::Handled(); }
     Step = static_cast<EVtuberCalibrationStep>(CalIndex(Step) + 1);
     if (Step != EVtuberCalibrationStep::Review) Session.RewindTo(Step);
     Status = TEXT("准备好后开始记录。");
     RebuildBody();
     return FReply::Handled();
+}
+FReply SVtuberCalibrationWizard::Skip()
+{
+    if (bApplied || !Session.SkipStep(Step)) return FReply::Handled();
+    bPreparing = false;
+    return Next();
 }
 FReply SVtuberCalibrationWizard::Back()
 {

@@ -160,6 +160,7 @@ public:
     void ResetChannelResponse(FName Channel);
     void ResetAllChannelResponses();
     const TArray<FVtuberMorphMapping>& GetMappings() const { return Mappings; }
+    FName GetRecommendedMorph(FName Channel) const;
     bool SetMapping(const FVtuberMorphMapping& Mapping);
     bool SetHeadBone(FName Bone);
     FName GetHeadBone() const { return HeadBone; }
@@ -188,6 +189,7 @@ private:
     friend class FVtuberRuntimeRigTest;
     friend class FVtuberAnatomicalRetargetTest;
     friend class FVtuberEyeMorphBudgetTest;
+    friend class FVtuberExpressionBlendTest;
 #endif
     void UpdateTracking(float DeltaTime);
     void BuildDefaultMappings();

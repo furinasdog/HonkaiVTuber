@@ -278,7 +278,13 @@ bool FNativeTracking::Poll(FVtuberTrackingSnapshot& Out)
         Status = TEXT("摄像头已停止"); return false;
     }
     FString Text; TSharedPtr<FJsonObject> Object;
-    if (!ReadSnapshot(OutputPath, Text) || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Object) || !Object)
+    bool bReadSnapshot = false;
+#if WITH_DEV_AUTOMATION_TESTS
+    if (!ReplayJsonText.IsEmpty()) { Text = ReplayJsonText; bReadSnapshot = true; }
+    else
+#endif
+    bReadSnapshot = ReadSnapshot(OutputPath, Text);
+    if (!bReadSnapshot || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Object) || !Object)
     {
         if (Process.IsValid() && !IsRunning()) Status = TEXT("追踪程序已退出，检查摄像头是否被占用及本地日志");
         return false;
@@ -386,6 +392,75 @@ bool FNativeTracking::LoadReplayFrame(const FString& Path, bool bMirrorFrame, FV
     Replay.OutputPath = Path;
     Replay.bMirror = bMirrorFrame;
     return Replay.Poll(Out);
+}
+
+bool FNativeTracking::ParseReplayFrameJson(const FString& Json, bool bMirrorFrame, FVtuberTrackingSnapshot& Out)
+{
+    // Keep sequence replay in memory while using Poll's actual conversion and one mirror pass.
+    if (Json.IsEmpty() || Json.Len() > 65536 || FTCHARToUTF8(*Json).Length() > 65536) return false;
+    TSharedPtr<FJsonObject> Object;
+    if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Object) || !Object) return false;
+    bool bTracked = false;
+    const TSharedPtr<FJsonObject>* Head = nullptr;
+    // UE's TryGet accessors coerce strings/numbers/bools; QA fixtures require their declared JSON types.
+    if (!Object->HasTypedField<EJson::Number>(TEXT("schema")) || !Object->HasTypedField<EJson::Number>(TEXT("timestamp"))
+        || !Object->HasTypedField<EJson::Boolean>(TEXT("tracked")) || !Object->TryGetBoolField(TEXT("tracked"), bTracked)) return false;
+    if (Object->HasField(TEXT("head")) && !Object->TryGetObjectField(TEXT("head"), Head)) return false;
+    if (bTracked && !Head) return false;
+    if (Head)
+        for (const TCHAR* Field : { TEXT("yaw"), TEXT("pitch"), TEXT("roll") })
+            if (!(*Head)->HasTypedField<EJson::Number>(Field)) return false;
+    for (const TCHAR* Field : { TEXT("fps"), TEXT("latency_ms") })
+        if (Object->HasField(Field) && !Object->HasTypedField<EJson::Number>(Field)) return false;
+    FNativeTracking Replay;
+    Replay.ReplayJsonText = Json;
+    Replay.bMirror = bMirrorFrame;
+    FVtuberTrackingSnapshot Parsed;
+    if (!Replay.Poll(Parsed) || (bTracked && !Parsed.bFaceTracked)) return false;
+
+    // Poll tolerates damaged optional data for live recovery; reject it in a QA fixture.
+    const TSharedPtr<FJsonObject>* Shapes = nullptr;
+    if (Object->HasField(TEXT("blendshapes"))
+        && (!Object->TryGetObjectField(TEXT("blendshapes"), Shapes) || (*Shapes)->Values.Num() != Parsed.BlendShapes.Num())) return false;
+    if (Shapes)
+        for (const auto& Shape : (*Shapes)->Values)
+            if (!Shape.Value.IsValid() || Shape.Value->Type != EJson::Number) return false;
+    const auto StrictPoints = [](const TArray<TSharedPtr<FJsonValue>>& Values)
+    {
+        for (const auto& Value : Values)
+        {
+            const TSharedPtr<FJsonObject>* Point = nullptr;
+            if (!Value.IsValid() || !Value->TryGetObject(Point)) return false;
+            for (const TCHAR* Field : { TEXT("x"), TEXT("y"), TEXT("z"), TEXT("visibility"), TEXT("presence") })
+                if (!(*Point)->HasTypedField<EJson::Number>(Field)) return false;
+        }
+        return true;
+    };
+    const TArray<TSharedPtr<FJsonValue>>* Points = nullptr;
+    for (const TCHAR* Field : { TEXT("pose_landmarks"), TEXT("pose_world_landmarks") })
+    {
+        if (!Object->HasField(Field)) continue;
+        const int32 ParsedCount = FCString::Strcmp(Field, TEXT("pose_landmarks")) == 0 ? Parsed.PoseLandmarks.Num() : Parsed.PoseWorldLandmarks.Num();
+        if (!Object->TryGetArrayField(Field, Points) || (Points->Num() != 0 && Points->Num() != 33)
+            || Points->Num() != ParsedCount || !StrictPoints(*Points)) return false;
+    }
+    const TArray<TSharedPtr<FJsonValue>>* Hands = nullptr;
+    if (Object->HasField(TEXT("hands")))
+    {
+        if (!Object->TryGetArrayField(TEXT("hands"), Hands) || Hands->Num() > 2 || Hands->Num() != Parsed.Hands.Num()) return false;
+        for (int32 Index = 0; Index < Hands->Num(); ++Index)
+        {
+            const TSharedPtr<FJsonObject>* Hand = nullptr;
+            if (!(*Hands)[Index]->TryGetObject(Hand) || !(*Hand)->HasTypedField<EJson::String>(TEXT("handedness"))
+                || !(*Hand)->HasTypedField<EJson::Number>(TEXT("score"))
+                || !(*Hand)->TryGetArrayField(TEXT("landmarks"), Points) || !StrictPoints(*Points)) return false;
+            if ((*Hand)->HasField(TEXT("world_landmarks"))
+                && (!(*Hand)->TryGetArrayField(TEXT("world_landmarks"), Points) || (Points->Num() != 0 && Points->Num() != 21)
+                    || Points->Num() != Parsed.Hands[Index].WorldLandmarks.Num() || !StrictPoints(*Points))) return false;
+        }
+    }
+    Out = MoveTemp(Parsed);
+    return true;
 }
 #endif
 

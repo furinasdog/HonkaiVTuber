@@ -21,11 +21,9 @@
 
 namespace
 {
-    const FLinearColor Ink = FLinearColor::FromSRGBColor(FColor(32, 41, 56));
-    const FLinearColor Muted = FLinearColor::FromSRGBColor(FColor(102, 117, 138));
-    const FLinearColor Accent = FLinearColor::FromSRGBColor(FColor(71, 116, 170));
-    const FLinearColor Field = FLinearColor::FromSRGBColor(FColor(230, 235, 242));
-    const FLinearColor Canvas = FLinearColor::FromSRGBColor(FColor(48, 50, 55));
+    const FLinearColor Ink = FMmdUiStyle::Colors().Text, Muted = FMmdUiStyle::Colors().Muted;
+    const FLinearColor Accent = FMmdUiStyle::Colors().Accent, Field = FMmdUiStyle::Colors().Field;
+    const FLinearColor Canvas = FMmdUiStyle::Colors().Canvas;
     const FLinearColor PoseInk = FLinearColor::FromSRGBColor(FColor(111, 222, 241));
     const FLinearColor LeftHandInk = FLinearColor::FromSRGBColor(FColor(255, 197, 107));
     const FLinearColor RightHandInk = FLinearColor::FromSRGBColor(FColor(124, 232, 185));
@@ -133,7 +131,7 @@ public:
                 const FVector2D Size = FSlateApplication::Get().GetRenderer()->GetFontMeasureService()->Measure(Text, Font);
                 const FVector2D Available = G.GetLocalSize();
                 FSlateDrawElement::MakeText(Elements, Layer + 1, G.ToPaintGeometry(Size, FSlateLayoutTransform((Available - Size) * .5)),
-                    Text, Font, ESlateDrawEffect::None, FLinearColor(.7f, .72f, .75f));
+                    Text, Font, ESlateDrawEffect::None, Muted);
             }
             return Layer + 1;
         }
@@ -196,7 +194,7 @@ void SVtuberCaptureResults::Construct(const FArguments& Args)
             + SVerticalBox::Slot().AutoHeight()[Label(Name, 11, Muted)]
             + SVerticalBox::Slot().AutoHeight().Padding(0, 3, 0, 0)
             [SNew(STextBlock).Text_Lambda([Value] { return FText::FromString(Value()); })
-                .ColorAndOpacity_Lambda([Active] { return FSlateColor(Active() ? Accent : Muted); }).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))];
+                .ColorAndOpacity_Lambda([Active] { return FSlateColor(Active() ? FMmdUiStyle::Colors().AccentText : Muted); }).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))];
     };
     auto Angle = [this](const FString& Name, int32 Axis) -> TSharedRef<SWidget>
     {
@@ -207,8 +205,8 @@ void SVtuberCaptureResults::Construct(const FArguments& Args)
                 .Font(FCoreStyle::GetDefaultFontStyle("Regular", 14))];
     };
     ChildSlot
-    [SNew(SBox).WidthOverride(400).MaxDesiredHeight(570)
-        [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FLinearColor::White).Padding(12)
+    [SNew(SBox).MaxDesiredWidth(400).MaxDesiredHeight(570)
+        [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FMmdUiStyle::Colors().Panel).Padding(12)
             [SNew(SScrollBox)
                 + SScrollBox::Slot()
                 [SNew(SVerticalBox)

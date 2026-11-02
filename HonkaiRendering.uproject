@@ -5,6 +5,11 @@
 	"Description": "",
 	"Modules": [
 		{
+			"Name": "HonkaiWindowStartup",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
+		},
+		{
 			"Name": "HonkaiRendering",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",

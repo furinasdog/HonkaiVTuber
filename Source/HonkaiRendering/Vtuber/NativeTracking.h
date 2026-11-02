@@ -40,6 +40,7 @@ public:
     void SaveSettings() const;
 #if WITH_DEV_AUTOMATION_TESTS
     static bool LoadReplayFrame(const FString& Path, bool bMirrorFrame, FVtuberTrackingSnapshot& Out);
+    static bool ParseReplayFrameJson(const FString& Json, bool bMirrorFrame, FVtuberTrackingSnapshot& Out);
 #endif
     int32 CameraIndex = 0, Width = 640, Height = 480, FramesPerSecond = 30;
     float Confidence = .5f;
@@ -49,6 +50,7 @@ public:
 private:
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FVtuberPreviewFrameTest;
+    FString ReplayJsonText;
 #endif
     FNativeTrackingPreview Preview;
     bool bPreviewEnabled = false;

@@ -11,5 +11,6 @@ public class HonkaiRenderingTarget : TargetRules
 		DefaultBuildSettings = BuildSettingsVersion.V7;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_8;
 		ExtraModuleNames.Add("HonkaiRendering");
+		ExtraModuleNames.Add("HonkaiWindowStartup");
 	}
 }

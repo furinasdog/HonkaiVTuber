@@ -6,7 +6,11 @@
 #include "Widgets/SCompoundWidget.h"
 #include "VtuberRig.h"
 
-enum class EVtuberCalibrationStep : uint8 { RelaxedMouth, OpenMouth, Smile, OpenEyes, ClosedEyes, Review };
+enum class EVtuberCalibrationStep : uint8
+{
+    RelaxedMouth, OpenMouth, Smile, OpenEyes, ClosedEyes,
+    Pucker, Funnel, Stretch, MouthLeft, MouthRight, Squint, Wide, BrowRaise, BrowDown, MouthClose, Review
+};
 
 // Sampling state has no rig/profile writes. Input values are in GetChannelInput's
 // existing neutral-adjusted domain; the raw snapshot supplies face/frame validity.
@@ -14,6 +18,7 @@ class FVtuberCalibrationSession
 {
 public:
     static constexpr int32 MinimumFrames = 12;
+    static constexpr int32 StepCount = static_cast<int32>(EVtuberCalibrationStep::Review);
     static constexpr double MinimumSeconds = 1.;
     static constexpr float MinimumSpan = .12f;
     static const TArray<FName>& RequiredChannels(EVtuberCalibrationStep Step);
@@ -26,6 +31,8 @@ public:
     void Reset();
     bool IsCollecting() const { return bCollecting; }
     bool IsComplete(EVtuberCalibrationStep Step) const;
+    bool IsSkipped(EVtuberCalibrationStep Step) const;
+    bool SkipStep(EVtuberCalibrationStep Step);
     bool IsReady() const;
     int32 GetFrameCount() const;
     double GetRecordedSeconds() const;
@@ -33,8 +40,8 @@ public:
     static bool FitRange(const TArray<float>& Neutral, const TArray<float>& Active,
         FVtuberThresholdCurve& Range, FString& Error);
 private:
-    struct FSamples { TMap<FName, TArray<float>> Values; int32 Count = 0; double First = 0, Last = 0; bool bComplete = false; };
-    FSamples Steps[5];
+    struct FSamples { TMap<FName, TArray<float>> Values; int32 Count = 0; double First = 0, Last = 0; bool bComplete = false, bSkipped = false; };
+    FSamples Steps[StepCount];
     EVtuberCalibrationStep Current = EVtuberCalibrationStep::RelaxedMouth;
     bool bCollecting = false;
     double LastTimestamp = 0;
@@ -51,9 +58,10 @@ struct FVtuberCalibrationChange
 class SVtuberCalibrationWizard : public SCompoundWidget
 {
 public:
-    SLATE_BEGIN_ARGS(SVtuberCalibrationWizard) : _IsTracking(false) {}
+    SLATE_BEGIN_ARGS(SVtuberCalibrationWizard) : _IsTracking(false), _IsMirrored(false) {}
         SLATE_ATTRIBUTE(FVtuberTrackingSnapshot, GetSnapshot)
         SLATE_ATTRIBUTE(bool, IsTracking)
+        SLATE_ATTRIBUTE(bool, IsMirrored)
         SLATE_EVENT(FSimpleDelegate, OnFinished)
     SLATE_END_ARGS()
     void Construct(const FArguments& Args, UVtuberRigComponent* InRig);
@@ -63,6 +71,7 @@ public:
 private:
 #if WITH_DEV_AUTOMATION_TESTS
     friend class FVtuberCalibrationWizardTest;
+    friend class FVtuberCalibrationDirectionTest;
 #endif
     void RebuildBody();
     void BuildReview();
@@ -71,12 +80,14 @@ private:
     FText StepInstruction() const;
     FReply Record();
     FReply Next();
+    FReply Skip();
     FReply Back();
     FReply Cancel();
     FReply Apply();
     TWeakObjectPtr<UVtuberRigComponent> Rig;
     TAttribute<FVtuberTrackingSnapshot> SnapshotSource;
     TAttribute<bool> TrackingSource;
+    TAttribute<bool> MirroredSource;
     FSimpleDelegate Finished;
     FVtuberCalibrationSession Session;
     EVtuberCalibrationStep Step = EVtuberCalibrationStep::RelaxedMouth;

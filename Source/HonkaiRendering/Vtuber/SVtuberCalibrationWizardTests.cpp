@@ -15,7 +15,9 @@ namespace HonkaiCalibrationTests
 using FSession = FVtuberCalibrationSession;
 using EStep = EVtuberCalibrationStep;
 constexpr EStep CalibrationSteps[] = {
-    EStep::RelaxedMouth, EStep::OpenMouth, EStep::Smile, EStep::OpenEyes, EStep::ClosedEyes
+    EStep::RelaxedMouth, EStep::OpenMouth, EStep::Smile, EStep::OpenEyes, EStep::ClosedEyes,
+    EStep::Pucker, EStep::Funnel, EStep::Stretch, EStep::MouthLeft, EStep::MouthRight,
+    EStep::Squint, EStep::Wide, EStep::BrowRaise, EStep::BrowDown, EStep::MouthClose
 };
 
 TArray<float> StableSamples(float Center, int32 Count = FSession::MinimumFrames + 1)
@@ -207,9 +209,9 @@ bool FVtuberCalibrationSamplingTest::RunTest(const FString& Parameters)
     return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberCalibrationFiveStepsTest, "HonkaiVTuber.Calibration.FiveSteps",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberCalibrationExpressionsTest, "HonkaiVTuber.Calibration.ExtendedExpressions",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FVtuberCalibrationFiveStepsTest::RunTest(const FString& Parameters)
+bool FVtuberCalibrationExpressionsTest::RunTest(const FString& Parameters)
 {
     using namespace HonkaiCalibrationTests;
     FSession Session;
@@ -217,7 +219,7 @@ bool FVtuberCalibrationFiveStepsTest::RunTest(const FString& Parameters)
     TMap<FName, FVtuberThresholdCurve> Ranges;
     TestFalse(TEXT("An incomplete session offers no applicable ranges"), Session.BuildRanges(Ranges, Error));
     TestTrue(TEXT("An incomplete session leaves the proposal empty"), Ranges.IsEmpty());
-    const float Values[] = {.1f, .7f, .75f, .12f, .78f};
+    const float Values[] = {.1f, .7f, .75f, .12f, .78f, .7f, .7f, .7f, .7f, .7f, .7f, .7f, .7f, .7f, .7f};
     for (int32 Index = 0; Index < UE_ARRAY_COUNT(CalibrationSteps); ++Index)
     {
         const EStep Step = CalibrationSteps[Index];
@@ -229,10 +231,10 @@ bool FVtuberCalibrationFiveStepsTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("The completed step remains recorded"), Session.IsComplete(Step));
         TestFalse(TEXT("Completed step is no longer collecting"), Session.IsCollecting());
     }
-    TestTrue(TEXT("All five completed steps make the session ready to apply"), Session.IsReady());
-    TestTrue(TEXT("All five completed steps build a proposal from input-domain values"), Session.BuildRanges(Ranges, Error));
-    TestEqual(TEXT("The proposal only includes the five calibrated expression channels"), Ranges.Num(), 5);
-    const FName Channels[] = {TEXT("jawOpen"), TEXT("mouthSmileLeft"), TEXT("mouthSmileRight"), TEXT("eyeBlinkLeft"), TEXT("eyeBlinkRight")};
+    TestTrue(TEXT("All fifteen completed steps make the session ready to apply"), Session.IsReady());
+    TestTrue(TEXT("All fifteen completed steps build a proposal from input-domain values"), Session.BuildRanges(Ranges, Error));
+    TestEqual(TEXT("The extended proposal contains twenty-one sampled channels"), Ranges.Num(), 21);
+    const FName Channels[] = {TEXT("jawOpen"), TEXT("mouthPucker"), TEXT("mouthFunnel"), TEXT("mouthStretchLeft"), TEXT("mouthStretchRight"), TEXT("mouthLeft"), TEXT("mouthRight"), TEXT("mouthClose"), TEXT("browInnerUp"), TEXT("browDownLeft"), TEXT("eyeSquintLeft"), TEXT("eyeWideRight"), TEXT("eyeBlinkLeft"), TEXT("eyeBlinkRight")};
     for (FName Channel : Channels)
     {
         const auto* Range = Ranges.Find(Channel);
@@ -241,6 +243,56 @@ bool FVtuberCalibrationFiveStepsTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Every proposed threshold is valid and usable"), Range->IsValid() && Range->Full - Range->Start >= FSession::MinimumSpan - KINDA_SMALL_NUMBER);
         TestTrue(TEXT("Neutral input maps near zero"), Range->Evaluate(.12f) <= .2f);
         TestTrue(TEXT("Active input maps near full"), Range->Evaluate(.78f) >= .8f);
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberCalibrationSkipTest, "HonkaiVTuber.Calibration.OptionalSkip",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FVtuberCalibrationSkipTest::RunTest(const FString& Parameters)
+{
+    using namespace HonkaiCalibrationTests;
+    FSession Session;
+    FString Error;
+    TestFalse(TEXT("The required neutral cannot be skipped"), Session.SkipStep(EStep::RelaxedMouth));
+    TestFalse(TEXT("An optional step cannot bypass the required baseline"), Session.SkipStep(EStep::Pucker));
+    for (int32 I = 0; I < 5; ++I)
+    {
+        const auto Step = CalibrationSteps[I];
+        if (!TestTrue(TEXT("Capture required steps before optional skip"), RecordStep(Session, Step, 400 + I * 5, I == 0 || I == 3 ? .1f : .7f, Error))) return false;
+        if (!TestTrue(TEXT("Required step completes"), Session.CompleteStep(Error))) return false;
+    }
+    TestFalse(TEXT("Unvisited optional steps need an explicit decision"), Session.IsReady());
+    if (!TestTrue(TEXT("Optional expression can begin recording"), RecordStep(Session, EStep::Pucker, 430, .1f, Error))) return false;
+    TestFalse(TEXT("Weak optional capture is not approved"), Session.CompleteStep(Error));
+    TestTrue(TEXT("Unsupported or weak pucker can be explicitly skipped"), Session.SkipStep(EStep::Pucker));
+    TestEqual(TEXT("Skipping discards partial samples"), Session.GetFrameCount(), 0);
+    for (int32 I = 6; I < FSession::StepCount; ++I)
+        TestTrue(TEXT("Remaining optional expressions may each be skipped"), Session.SkipStep(CalibrationSteps[I]));
+    TMap<FName, FVtuberThresholdCurve> Ranges;
+    TestTrue(TEXT("A recorded core plus explicit skips can apply"), Session.BuildRanges(Ranges, Error));
+    TestEqual(TEXT("Skipped expressions never enter the proposal"), Ranges.Num(), 5);
+    TestFalse(TEXT("Skipped pucker preserves its existing response"), Ranges.Contains(TEXT("mouthPucker")));
+    TestFalse(TEXT("Skipped wide eye preserves its existing response"), Ranges.Contains(TEXT("eyeWideLeft")));
+    Session.RewindTo(EStep::Pucker);
+    TestFalse(TEXT("Back and rerecord clear the skip decision"), Session.IsSkipped(EStep::Pucker));
+    TestFalse(TEXT("Rewind clears later completion and requires new decisions"), Session.IsReady());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberCalibrationDirectionTest, "HonkaiVTuber.Calibration.MirroredDirections",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FVtuberCalibrationDirectionTest::RunTest(const FString& Parameters)
+{
+    for (bool Mirror : {false, true})
+    {
+        auto Wizard = SNew(SVtuberCalibrationWizard, nullptr).IsMirrored(Mirror);
+        Wizard->Step = EVtuberCalibrationStep::MouthLeft;
+        TestTrue(TEXT("Left channel prompts the physical side required by the mirror bridge"),
+            Wizard->StepInstruction().ToString().Contains(Mirror ? TEXT("自己的右侧") : TEXT("自己的左侧")));
+        Wizard->Step = EVtuberCalibrationStep::MouthRight;
+        TestTrue(TEXT("Right channel prompts the opposite physical side"),
+            Wizard->StepInstruction().ToString().Contains(Mirror ? TEXT("自己的左侧") : TEXT("自己的右侧")));
     }
     return true;
 }
