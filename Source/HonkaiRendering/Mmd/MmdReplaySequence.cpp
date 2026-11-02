@@ -11,8 +11,8 @@ bool FMmdReplaySequence::Load(const FString& Path, float Fps, bool bLoop, bool b
     Frames.Reset();
     const int64 Size = IFileManager::Get().FileSize(*Path);
     FString Text;
-    if (Size <= 0 || Size > 1024 * 1024 || !FFileHelper::LoadFileToString(Text, *Path))
-    { Error = TEXT("回放文件必须可读、非空，且不超过 1 MiB"); return false; }
+    if (Size <= 0 || Size > MaxBytes || !FFileHelper::LoadFileToString(Text, *Path))
+    { Error = TEXT("回放文件必须可读、非空，且不超过 8 MiB"); return false; }
     return Parse(Text, Fps, bLoop, bMirror, Error);
 }
 
@@ -21,8 +21,8 @@ bool FMmdReplaySequence::Parse(const FString& JsonLines, float Fps, bool bLoop, 
     Frames.Reset(); Error.Reset();
     if (!FMath::IsFinite(Fps) || Fps < 1 || Fps > 240)
     { Error = TEXT("回放帧率必须在 1 到 240 之间"); return false; }
-    if (JsonLines.IsEmpty() || JsonLines.Len() > 1024 * 1024 || FTCHARToUTF8(*JsonLines).Length() > 1024 * 1024)
-    { Error = TEXT("回放内容必须非空，且不超过 1 MiB"); return false; }
+    if (JsonLines.IsEmpty() || JsonLines.Len() > MaxBytes || FTCHARToUTF8(*JsonLines).Length() > MaxBytes)
+    { Error = TEXT("回放内容必须非空，且不超过 8 MiB"); return false; }
     TArray<FString> Lines;
     JsonLines.ParseIntoArrayLines(Lines, false);
     TArray<FVtuberTrackingSnapshot> Parsed;
@@ -31,8 +31,8 @@ bool FMmdReplaySequence::Parse(const FString& JsonLines, float Fps, bool bLoop, 
         const FString Line = Lines[LineIndex].TrimStartAndEnd();
         if (Line.IsEmpty()) continue;
         FVtuberTrackingSnapshot Frame;
-        if (Parsed.Num() >= 600 || !FNativeTracking::ParseReplayFrameJson(Line, bMirror, Frame))
-        { Error = FString::Printf(TEXT("回放第 %d 行无效，或帧数超过 600"), LineIndex + 1); return false; }
+        if (Parsed.Num() >= MaxFrames || !FNativeTracking::ParseReplayFrameJson(Line, bMirror, Frame))
+        { Error = FString::Printf(TEXT("回放第 %d 行无效，或帧数超过 %d"), LineIndex + 1, MaxFrames); return false; }
         Parsed.Add(MoveTemp(Frame));
     }
     if (Parsed.IsEmpty()) { Error = TEXT("回放没有有效帧"); return false; }
@@ -106,10 +106,19 @@ bool FMmdReplaySequenceTest::RunTest(const FString& Parameters)
         TestEqual(Label + TEXT("rejected sequence cannot retain an earlier valid sample"), Sequence.Num(), 0);
     }
     FString Limit;
-    for (int32 Index = 0; Index < 600; ++Index) Limit += Left + TEXT("\n");
-    TestTrue(TEXT("Exactly 600 actual frames are allowed"), Sequence.Parse(Limit, 30, false, false, Error));
-    TestFalse(TEXT("Frame 601 is rejected"), Sequence.Parse(Limit + Left, 30, false, false, Error));
-    TestFalse(TEXT("Content larger than one MiB is rejected"), Sequence.Parse(FString::ChrN(1024 * 1024 + 1, TCHAR(' ')), 60, false, false, Error));
+    for (int32 Index = 0; Index < FMmdReplaySequence::MaxFrames; ++Index) Limit += Left + TEXT("\n");
+    TestTrue(TEXT("Exactly 1800 offline fixture frames are allowed"), Sequence.Parse(Limit, 30, false, false, Error));
+    TestFalse(TEXT("Frame 1801 is rejected"), Sequence.Parse(Limit + Left, 30, false, false, Error));
+    TestFalse(TEXT("Content larger than eight MiB is rejected"), Sequence.Parse(FString::ChrN(FMmdReplaySequence::MaxBytes + 1, TCHAR(' ')), 60, false, false, Error));
+    // ASCII JSON whitespace makes a complete, nonprivate fixture exceed the former byte cap.
+    const FString LargeFrame = Left.LeftChop(1) + FString::ChrN(8192, TCHAR(' ')) + TEXT("}");
+    FString Full738;
+    Full738.Reserve((LargeFrame.Len() + 1) * 738);
+    for (int32 Index = 0; Index < 738; ++Index) Full738 += LargeFrame + TEXT("\n");
+    TestTrue(TEXT("The complete synthetic fixture exceeds the former one MiB cap"), FTCHARToUTF8(*Full738).Length() > 1024 * 1024);
+    if (!TestTrue(TEXT("738 synthetic frames use the actual native parser within the new bounds"), Sequence.Parse(Full738, 30, false, false, Error))) return false;
+    TestEqual(TEXT("All 738 fixture frames are retained"), Sequence.Num(), 738);
+    TestEqual(TEXT("Complete fixture playback holds frame 737 at its tail"), Sequence.FrameIndex(1.e100), 737);
     TestFalse(TEXT("A single frame cannot bypass the native 64 KiB bound"), FNativeTracking::ParseReplayFrameJson(FString::ChrN(65537, TCHAR(' ')), false, Plain));
     FString Loop56;
     for (int32 Index = 0; Index < 56; ++Index) Loop56 += Left + TEXT("\n");
