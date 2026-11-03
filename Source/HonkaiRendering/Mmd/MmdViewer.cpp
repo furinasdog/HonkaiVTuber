@@ -1402,7 +1402,11 @@ void AMmdViewerController::BeginPlay()
     Light->SetShadowSlopeBias(0.3f);
     float LightYaw = -5.f;
     FParse::Value(FCommandLine::Get(), TEXT("MmdLightYaw="), LightYaw);
-    Key->SetActorRotation(FRotator(-45.f, LightYaw + 180.f, 0));
+    float LightPitch = -15.f;
+#if WITH_DEV_AUTOMATION_TESTS
+    FParse::Value(FCommandLine::Get(), TEXT("MmdLightPitch="), LightPitch);
+#endif
+    Key->SetActorRotation(FRotator(LightPitch, LightYaw + 180.f, 0));
     KeyDirection = -Key->GetActorForwardVector();
     Renderer = NewObject<UHonkaiRenderInstance>(this);
     UpdateCamera();
