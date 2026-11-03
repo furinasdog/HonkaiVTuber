@@ -6,6 +6,7 @@
 #include "Camera/CameraActor.h"
 #include "MmdEnhancement.h"
 #include "MmdPartVisibility.h"
+#include "HonkaiUpscaling.h"
 #include "Vtuber/NativeTracking.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "MmdReplaySequence.h"
@@ -49,8 +50,13 @@ public:
     void ClearEnhancementCache();
     void SetBackground(int32 Preset);
     void SetRenderScale(int32 Percent);
+    void SetUpscaling(EHonkaiUpscalingMode Mode);
+    FString UpscalingStatus() const;
     void SetEnhancementResolution(int32 Resolution);
     void ToggleTracking();
+    bool IsTrackingReplay() const;
+    FString TrackingActionLabel();
+    void StopTrackingReplay();
     FString TrackingSummary();
     void RecordTrackingFrame(const FVtuberTrackingSnapshot& Snapshot);
     void ToggleSpout();
@@ -104,6 +110,13 @@ private:
     void HandleGenerationStatus(const FMmdEnhancementStatus& Progress);
     bool ApplyGeneratedProfile(const FString& Directory, bool bEnabled, const FMmdModelState& CandidateState);
     bool CommitGeneratedProfile(const TMap<int32, TObjectPtr<UTexture2D>>& Maps, const FMmdModelState& CandidateState, bool bEnabled);
+    FHonkaiUpscaling Upscaling;
+    FString UpscalingNotice;
+#if WITH_DEV_AUTOMATION_TESTS
+    int32 UpscalingQaStep = 0;
+    double UpscalingQaStart = 0;
+    FString UpscalingQaBaseline;
+#endif
     FMmdEnhancement Enhancement;
     bool SavePartVisibility();
     FMmdPartVisibility PartVisibility;

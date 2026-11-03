@@ -46,3 +46,7 @@ The VRM4U fork's `Source/VRM4U/Private/VrmPmxBoneTransform.cpp` adapts `MMDBoneT
 ## Honkai Toon Renderer
 
 渲染模块以 Git 子模块关联，原创代码采用 MIT；插件内通用白色纹理来自 Unreal Engine，保留其 Epic 许可，详见插件 LICENSE 和 THIRD_PARTY_NOTICES.md。不包含角色素材。
+
+## NVIDIA DLSS（可选）
+
+可选的 NVIDIA 官方 UE 5.8 插件 8.9.0 / NGX 310.9.16 由 `Plugins/HonkaiToonRenderer/Scripts/Prepare-NvidiaDlss.ps1` 从官方包校验并准备，供应商源代码和 SDK 不进入 Git。使用与分发遵守 NVIDIA RTX SDK EULA；运行库附 NVIDIA 许可。NVIDIA DLSS 为 NVIDIA 商标。

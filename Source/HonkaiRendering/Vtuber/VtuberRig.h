@@ -83,6 +83,7 @@ struct FVtuberRigSettings
     float YawLimitDegrees = 55;
     float PitchLimitDegrees = 30;
     float RollLimitDegrees = 30;
+    float IdleArmAngleDegrees = 20.f;
     // Positive and negative directions are independent amplitudes, never clamped together.
     FVtuberThresholdCurve YawPositive, YawNegative, PitchPositive, PitchNegative, RollPositive, RollNegative;
 };

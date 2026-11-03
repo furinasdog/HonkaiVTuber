@@ -1,3 +1,5 @@
+#include "Misc/Parse.h"
+#include "Misc/CommandLine.h"
 #include "VtuberRig.h"
 
 #include "Animation/AnimInstanceProxy.h"
@@ -421,6 +423,7 @@ namespace
         return FiniteRange(S.SmoothingSeconds, 0, 2) && FiniteRange(S.LostTrackingSeconds, .05f, 5)
             && FiniteRange(S.ReturnSeconds, .05f, 5) && FiniteRange(S.YawLimitDegrees, 1, 90)
             && FiniteRange(S.PitchLimitDegrees, 1, 60) && FiniteRange(S.RollLimitDegrees, 1, 60)
+            && FiniteRange(S.IdleArmAngleDegrees, 0, 90)
             && S.YawPositive.IsValid() && S.YawNegative.IsValid() && S.PitchPositive.IsValid()
             && S.PitchNegative.IsValid() && S.RollPositive.IsValid() && S.RollNegative.IsValid();
     }
@@ -594,6 +597,10 @@ namespace
         }
         void ApplyPmxPhysics(FPoseContext& Output)
         {
+            bool bRunSimulation = true;
+#if WITH_DEV_AUTOMATION_TESTS
+            bRunSimulation = !FParse::Param(FCommandLine::Get(), TEXT("PmxQaNoSimulation"));
+#endif
             if (!PmxPhysics && !PmxBoneTransform) return;
             const FBoneContainer& Bones = Output.Pose.GetBoneContainer();
             if (Bones.GetReferenceSkeleton().GetNum() != PmxReferencePose.Num())
@@ -634,12 +641,12 @@ namespace
                 }
                 bPmxNeedsPoseReset = false;
             }
-            if (PmxPhysics && !PmxPhysics->Simulate(PmxDeltaSeconds, PmxComponentToWorld, Pose, Error))
+            if (PmxPhysics && bRunSimulation && !PmxPhysics->Simulate(PmxDeltaSeconds, PmxComponentToWorld, Pose, Error))
             {
                 ReportPmxFailure(TEXT("Simulate"), Error.IsEmpty() ? TEXT("The PMX simulator rejected the current frame.") : Error);
                 return;
             }
-            if (PmxBoneTransform && !PmxBoneTransform->EvaluateStage(true, PmxPhysics != nullptr, Pose, Error, &RotationGoals))
+            if (PmxBoneTransform && !PmxBoneTransform->EvaluateStage(true, bRunSimulation && PmxPhysics != nullptr, Pose, Error, &RotationGoals))
                 ReportAppendFailure(TEXT("AfterPhysics"), Error);
             TArray<FTransform> LocalPose;
             LocalPose.SetNum(Pose.Num());
@@ -848,7 +855,7 @@ void UVtuberRigComponent::BuildIdleArmPose()
         Up = ReferenceComponentPose[Top].GetLocation() - ReferenceComponentPose[Spine].GetLocation();
     Up = (Up - Across * FVector::DotProduct(Up, Across)).GetSafeNormal();
     if (Up.IsNearlyZero()) return;
-    const float Angle = FMath::DegreesToRadians(20.f);
+    const float Angle = FMath::DegreesToRadians(Settings.IdleArmAngleDegrees);
     for (int32 Side = 0; Side < 2; ++Side)
     {
         const FName Channel = Side == 0 ? TEXT("upperarm_l") : TEXT("upperarm_r");
@@ -934,10 +941,12 @@ void UVtuberRigComponent::ResetNeutral()
 bool UVtuberRigComponent::SetSettings(const FVtuberRigSettings& Value)
 {
     if (!ValidSettings(Value)) return false;
+    const bool bIdleAngleChanged = Value.IdleArmAngleDegrees != Settings.IdleArmAngleDegrees;
     if (Value.bBodyEnabled != Settings.bBodyEnabled) { SteadyBodyTargets.Reset(); BodyFrameMedian.Reset(); }
     if (Value.SmoothingSeconds != Settings.SmoothingSeconds)
         for (auto& Response : ChannelResponses) Response.Value.SmoothingSeconds = FMath::Clamp(Value.SmoothingSeconds, 0.f, .5f);
     Settings = Value;
+    if (bIdleAngleChanged) BuildIdleArmPose();
     return true;
 }
 
@@ -1466,6 +1475,7 @@ bool UVtuberRigComponent::SaveProfile(const FString& Path, FString& Error) const
     S->SetNumberField(TEXT("smoothing_seconds"), Settings.SmoothingSeconds); S->SetNumberField(TEXT("lost_seconds"), Settings.LostTrackingSeconds);
     S->SetNumberField(TEXT("return_seconds"), Settings.ReturnSeconds); S->SetNumberField(TEXT("yaw_limit"), Settings.YawLimitDegrees);
     S->SetNumberField(TEXT("pitch_limit"), Settings.PitchLimitDegrees); S->SetNumberField(TEXT("roll_limit"), Settings.RollLimitDegrees);
+    S->SetNumberField(TEXT("idle_arm_angle"), Settings.IdleArmAngleDegrees);
     S->SetObjectField(TEXT("yaw_positive"), CurveJson(Settings.YawPositive)); S->SetObjectField(TEXT("yaw_negative"), CurveJson(Settings.YawNegative));
     S->SetObjectField(TEXT("pitch_positive"), CurveJson(Settings.PitchPositive)); S->SetObjectField(TEXT("pitch_negative"), CurveJson(Settings.PitchNegative));
     S->SetObjectField(TEXT("roll_positive"), CurveJson(Settings.RollPositive)); S->SetObjectField(TEXT("roll_negative"), CurveJson(Settings.RollNegative));
@@ -1549,6 +1559,8 @@ bool UVtuberRigComponent::LoadProfile(const FString& Path, FString& Error)
         || !ReadCurve(**S, TEXT("pitch_positive"), NewSettings.PitchPositive) || !ReadCurve(**S, TEXT("pitch_negative"), NewSettings.PitchNegative)
         || !ReadCurve(**S, TEXT("roll_positive"), NewSettings.RollPositive) || !ReadCurve(**S, TEXT("roll_negative"), NewSettings.RollNegative)
         || !ValidSettings(NewSettings)) return Fail();
+    if ((*S)->HasField(TEXT("idle_arm_angle"))
+        && (!ReadNumber(**S, TEXT("idle_arm_angle"), NewSettings.IdleArmAngleDegrees) || !ValidSettings(NewSettings))) return Fail();
     // Profiles from before upper-body tracking did not carry these switches.
     (*S)->TryGetBoolField(TEXT("body_enabled"), NewSettings.bBodyEnabled);
     (*S)->TryGetBoolField(TEXT("hands_enabled"), NewSettings.bHandsEnabled);
@@ -1974,9 +1986,15 @@ bool FVtuberProfileTest::RunTest(const FString& Parameters)
     Response.Lower = -.7f; Response.Upper = .8f; Response.bInvert = true;
     Response.SmoothingSeconds = .17f; Response.Sensitivity = 1.6f; Response.Curvature = .4f; Response.Precision = 25;
     TestTrue(TEXT("Configure body response"), Rig->SetChannelResponse(TEXT("upperarm_l"), Response));
+    auto IdleSettings = Rig->GetSettings(); IdleSettings.IdleArmAngleDegrees = 37.f;
+    TestTrue(TEXT("Idle arm angle can be configured"), Rig->SetSettings(IdleSettings));
+    IdleSettings.IdleArmAngleDegrees = 91.f;
+    TestFalse(TEXT("Unsafe idle arm angle is rejected"), Rig->SetSettings(IdleSettings));
+    TestEqual(TEXT("Rejected angle retains prior setting"), Rig->GetSettings().IdleArmAngleDegrees, 37.f);
     TestTrue(TEXT("Write profile"), Rig->SaveProfile(Path, Error));
     auto* Copy = NewObject<UVtuberRigComponent>();
     TestTrue(TEXT("Read profile"), Copy->LoadProfile(Path, Error));
+    TestEqual(TEXT("Idle arm angle round trips"), Copy->GetSettings().IdleArmAngleDegrees, 37.f);
     TestEqual(TEXT("Range preserved"), Copy->GetSettings().YawLimitDegrees, 55.f);
     const auto RestoredResponse = Copy->GetChannelResponse(TEXT("upperarm_l"));
     TestTrue(TEXT("Channel response round trips all fields"), RestoredResponse.bInvert && RestoredResponse.bBipolar
@@ -2664,6 +2682,26 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Low confidence chain rejects arm"), Rig->IsBodyChannelTracked(TEXT("upperarm_l")));
     const FQuat FirstHold = Rig->SmoothedBody.FindChecked(TEXT("upperarm_l"));
     const int32 IdleUpper = Indices.FindChecked(TEXT("左腕"));
+    auto ArmDirection = [&](FName UpperChannel, FName LowerChannel)
+    {
+        const int32 UpperIndex = Indices.FindChecked(Rig->GetBodyBone(UpperChannel));
+        const int32 LowerIndex = Indices.FindChecked(Rig->GetBodyBone(LowerChannel));
+        const int32 ParentIndex = Skeleton->GetReferenceSkeleton().GetParentIndex(UpperIndex);
+        const FQuat TargetCS = GlobalRest[ParentIndex].GetRotation() * Rig->IdleArmLocalRotations.FindChecked(UpperChannel);
+        return (TargetCS * GlobalRest[UpperIndex].GetRotation().Inverse()).RotateVector(
+            (GlobalRest[LowerIndex].GetLocation() - GlobalRest[UpperIndex].GetLocation()).GetSafeNormal());
+    };
+    const auto OriginalIdleSettings = Rig->GetSettings();
+    auto AngleSettings = OriginalIdleSettings; AngleSettings.IdleArmAngleDegrees = 0.f;
+    TestTrue(TEXT("Vertical idle angle accepted"), Rig->SetSettings(AngleSettings));
+    const FVector Down = ArmDirection(TEXT("upperarm_l"), TEXT("lowerarm_l"));
+    AngleSettings.IdleArmAngleDegrees = 90.f;
+    TestTrue(TEXT("Horizontal idle angle accepted"), Rig->SetSettings(AngleSettings));
+    const FVector LeftOut = ArmDirection(TEXT("upperarm_l"), TEXT("lowerarm_l"));
+    const FVector RightOut = ArmDirection(TEXT("upperarm_r"), TEXT("lowerarm_r"));
+    TestTrue(TEXT("Configured endpoints are perpendicular and symmetric"), FMath::IsNearlyZero(FVector::DotProduct(Down, LeftOut), .001)
+        && LeftOut.Equals(-RightOut, .001));
+    Rig->SetSettings(OriginalIdleSettings);
     const FQuat IdleDelta = Rest[IdleUpper].GetRotation().Inverse() * Rig->IdleArmLocalRotations.FindChecked(TEXT("upperarm_l"));
     TestTrue(TEXT("One dropped body frame holds its last target"), FirstHold.Equals(BeforeLoss, .0001f));
     for (int32 I = 0; I < 12; ++I) Rig->UpdateTracking(1.f / 60.f);

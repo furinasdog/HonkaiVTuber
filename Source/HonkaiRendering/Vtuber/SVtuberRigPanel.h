@@ -8,7 +8,9 @@
 class SVtuberRigPanel : public SCompoundWidget
 {
 public:
-    SLATE_BEGIN_ARGS(SVtuberRigPanel) {} SLATE_END_ARGS()
+    SLATE_BEGIN_ARGS(SVtuberRigPanel) : _InitialTab(0) {}
+        SLATE_ARGUMENT(int32, InitialTab)
+    SLATE_END_ARGS()
     void Construct(const FArguments& Args, UVtuberRigComponent* InRig);
     virtual ~SVtuberRigPanel() override;
     virtual void Tick(const FGeometry& Geometry, double CurrentTime, float DeltaTime) override;

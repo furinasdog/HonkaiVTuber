@@ -245,23 +245,24 @@ public:
         Move = MoveTemp(In.Move);
         Collapse = MoveTemp(In.Collapse);
         HeaderButtonStyle = FMmdUiStyle::Get().Button;
+        HeaderButtonStyle.SetNormalPadding(FMargin(0)).SetPressedPadding(FMargin(0));
         TSharedRef<SHorizontalBox> Header = SNew(SHorizontalBox);
         Header->AddSlot().FillWidth(1).VAlign(VAlign_Center).Padding(0, 0, 10, 0)
             [SNew(STextBlock).Text(FText::FromString(In.Title)).ColorAndOpacity(Text)
                 .Font(FCoreStyle::GetDefaultFontStyle("Regular", 13)).AutoWrapText(false).OverflowPolicy(ETextOverflowPolicy::Ellipsis)];
         if (Collapse)
             Header->AddSlot().AutoWidth().VAlign(VAlign_Center)
-                [SNew(SBox).WidthOverride(48).HeightOverride(28)
+                [SNew(SBox).WidthOverride(56).HeightOverride(30)
                     [SNew(SButton).ButtonStyle(&HeaderButtonStyle).ContentPadding(0).HAlign(HAlign_Center).VAlign(VAlign_Center)
                         .OnClicked_Lambda([this] { bCollapsed = !bCollapsed; Collapse(); return FReply::Handled(); })
                         [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(bCollapsed ? TEXT("展开") : TEXT("收起")); })
-                            .ColorAndOpacity(FSlateColor::UseForeground()).Font(FCoreStyle::GetDefaultFontStyle("Regular", 11)).AutoWrapText(false)]]];
+                            .ColorAndOpacity(FSlateColor::UseForeground()).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)).AutoWrapText(false)]]];
         Header->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(6, 0, 0, 0)
-            [SNew(SBox).WidthOverride(48).HeightOverride(28)
+            [SNew(SBox).WidthOverride(56).HeightOverride(30)
                 [SNew(SButton).ButtonStyle(&HeaderButtonStyle).ContentPadding(0).HAlign(HAlign_Center).VAlign(VAlign_Center)
                     .OnClicked_Lambda([this] { Escape(); return FReply::Handled(); })
                     [SNew(STextBlock).Text(FText::FromString(TEXT("关闭"))).ColorAndOpacity(FSlateColor::UseForeground())
-                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 11)).AutoWrapText(false)]]];
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12)).AutoWrapText(false)]]];
         ChildSlot[SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(Panel).Padding(0)
             .Clipping(EWidgetClipping::ClipToBounds)
             [SNew(SVerticalBox)
@@ -360,12 +361,12 @@ public:
                         .IsEnabled_Lambda([this] { return Controller.IsValid() && Controller->Rig && !Controller->bBusy
                             && !Controller->Tracking.IsRunning() && !Controller->Tracking.IsStopping(); })
                         .OnClicked_Lambda([this] { Controller->ToggleTracking(); return FReply::Handled(); })
-                        [SNew(STextBlock).Text(FText::FromString(TEXT("启动捕捉"))).ColorAndOpacity(FSlateColor::UseForeground())
+                        [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller.IsValid() ? Controller->TrackingActionLabel() : FString(TEXT("开启动捕"))); }).ColorAndOpacity(FSlateColor::UseForeground())
                             .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))]]
                 + SHorizontalBox::Slot().FillWidth(1)
                     [SNew(SButton).ButtonStyle(&ButtonStyle).ContentPadding(FMargin(8, 7))
-                        .IsEnabled_Lambda([this] { return Controller.IsValid() && Controller->Tracking.IsRunning() && !Controller->Tracking.IsStopping(); })
-                        .OnClicked_Lambda([this] { Controller->ToggleTracking(); return FReply::Handled(); })
+                        .IsEnabled_Lambda([this] { return Controller.IsValid() && (Controller->IsTrackingReplay() || Controller->Tracking.IsRunning()) && !Controller->Tracking.IsStopping(); })
+                        .OnClicked_Lambda([this] { if (Controller->IsTrackingReplay()) Controller->StopTrackingReplay(); else Controller->ToggleTracking(); return FReply::Handled(); })
                         [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller.IsValid() && Controller->Tracking.IsStopping()
                             ? TEXT("正在停止…") : TEXT("停止")); }).ColorAndOpacity(FSlateColor::UseForeground())
                             .Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))]]];
@@ -432,7 +433,7 @@ public:
         {
             Movement.X = float(PlacementKeys.Contains(EKeys::W)) - float(PlacementKeys.Contains(EKeys::S));
             Movement.Y = float(PlacementKeys.Contains(EKeys::D)) - float(PlacementKeys.Contains(EKeys::A));
-            Movement.Z = float(PlacementKeys.Contains(EKeys::LeftShift) || PlacementKeys.Contains(EKeys::RightShift)) - float(PlacementKeys.Contains(EKeys::SpaceBar));
+            Movement.Z = float(PlacementKeys.Contains(EKeys::E)) - float(PlacementKeys.Contains(EKeys::Q));
         }
         if (Controller.IsValid()) Controller->MoveCharacter(Movement, Delta);
     }
@@ -555,6 +556,7 @@ public:
         else if (Page == "Application")
         {
             Title = TEXT("应用");
+            Add(Label(TEXT("NVIDIA DLSS\nPowered by NVIDIA. DLSS 为 NVIDIA 商标。\n第三方许可见安装目录 Licenses。"), 11, Muted));
             Add(Button(TEXT("打开用户数据目录"), [] { FPlatformProcess::ExploreFolder(*FMmdEnhancement::UserDataDir()); }));
             Add(Button(TEXT("清理生成缓存"), [this] { OpenPage("ClearCache"); }));
             Add(Label(TEXT("中键旋转 · Shift + 中键平移 · 滚轮缩放\n小键盘切换视角 · Home 重新取景\nH 隐藏或恢复界面"), 12, Muted));
@@ -595,8 +597,7 @@ public:
                     .IsEnabled_Lambda([this] { return Controller.IsValid() && !Controller->Tracking.IsStopping()
                         && (Controller->Tracking.IsRunning() || (Controller->Rig && !Controller->bBusy)); })
                     .OnClicked_Lambda([this] { Controller->ToggleTracking(); return FReply::Handled(); })
-                    [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller->Tracking.IsStopping() ? TEXT("正在停止…")
-                        : Controller->Tracking.IsRunning() ? TEXT("停止捕捉") : TEXT("启动捕捉")); })
+                    [SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller->TrackingActionLabel()); })
                         .ColorAndOpacity(FSlateColor::UseForeground()).Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))]]);
 
             Section(TEXT("摄像头"), 12);
@@ -659,11 +660,11 @@ public:
             Add(Label(TEXT("正对镜头、保持自然姿态后校准。摄像头画面只在本机处理。"), 11, Muted));
             Add(Button(TEXT("映射配置向导"), [this] { OpenPage("Calibration"); }));
         }
-        else if (Page == "Mapping")
+        else if (Page == "Mapping" || Page == "MappingOptions")
         {
             Title = TEXT("动作映射");
             Add(Button(TEXT("映射配置向导"), [this] { OpenPage("Calibration"); }));
-            if (Controller->Rig) Add(SAssignNew(MappingPanel, SVtuberRigPanel, Controller->Rig.Get()));
+            if (Controller->Rig) Add(SAssignNew(MappingPanel, SVtuberRigPanel, Controller->Rig.Get()).InitialTab(Page == "MappingOptions" ? 2 : 0));
             else Add(Label(TEXT("请先导入角色。")));
             Add(Button(TEXT("返回"), [this] { OpenPage(); }));
         }
@@ -813,7 +814,16 @@ public:
         else if (Page == "Settings")
         {
             Title = TEXT("设置");
-            Add(Label(TEXT("抗锯齿：TSR"), 13));
+            Add(Button(TEXT("默认手臂角度"), [this] { OpenPage("MappingOptions"); }));
+            Add(SNew(STextBlock).Text_Lambda([this] { return FText::FromString(Controller.IsValid() ? Controller->UpscalingStatus() : FString()); }).AutoWrapText(true).ColorAndOpacity(Text));
+            Add(Button(TEXT("TSR · 关闭 DLSS"), [this] { Controller->SetUpscaling(EHonkaiUpscalingMode::TSR); }));
+            FString DlssReason;
+            const bool bDlssSupported = FHonkaiUpscaling::IsSupported(DlssReason);
+            auto DlaaButton = Button(TEXT("NVIDIA DLAA · 原生分辨率抗锯齿"), [this] { Controller->SetUpscaling(EHonkaiUpscalingMode::DLAA); });
+            DlaaButton->SetEnabled(bDlssSupported); Add(DlaaButton);
+            auto DlssButton = Button(TEXT("NVIDIA DLSS 4.5 · 质量"), [this] { Controller->SetUpscaling(EHonkaiUpscalingMode::DLSSQuality); });
+            DlssButton->SetEnabled(bDlssSupported); Add(DlssButton);
+            Add(Label(TEXT("DLSS 仅作用于主视口；界面按窗口分辨率绘制。Spout 使用独立捕获。"), 11, Muted));
             Add(Button(TEXT("标准质量 · 100% 内部分辨率"), [this] { Controller->SetRenderScale(100); }));
             Add(Button(TEXT("高质量 · 150% 内部分辨率"), [this] { Controller->SetRenderScale(150); }));
             Add(SNew(STextBlock).Text_Lambda([this] { return FText::FromString(FString::Printf(TEXT("增强贴图尺寸：%d"), Controller->EnhancementResolution)); }).ColorAndOpacity(Text));
@@ -835,7 +845,7 @@ public:
             Title = TEXT("视角");
             Add(Button(TEXT("聚焦模型"), [this] { Controller->FocusModel(); CloseWindow(); }));
             Add(Button(TEXT("正交 / 透视"), [this] { Controller->ToggleProjection(); CloseWindow(); }));
-            Add(Label(TEXT("中键拖动：旋转（向右拖动时视角向左转）\nShift + 中键：平移\nCtrl + 中键或滚轮：缩放\nWASD：水平移动角色；Shift：上移；Space：下移\n\n小键盘 1 / 3 / 7：正 / 右 / 顶视图\nCtrl + 小键盘：反向视图\n小键盘 5：正交 / 透视\n小键盘 . 或 Home：聚焦"), 12, Muted));
+            Add(Label(TEXT("中键拖动：旋转（向右拖动时视角向左转）\nShift + 中键：平移\nCtrl + 中键或滚轮：缩放\nWASD：水平移动角色；E：上移；Q：下移\n\n小键盘 1 / 3 / 7：正 / 右 / 顶视图\nCtrl + 小键盘：反向视图\n小键盘 5：正交 / 透视\n小键盘 . 或 Home：聚焦"), 12, Muted));
             Add(Button(TEXT("返回"), [this] { OpenPage(); }));
         }
         else if (Page == "Choose")
@@ -855,7 +865,7 @@ public:
             if (!Controller->bBusy) Add(Button(TEXT("关闭"), [this] { CloseWindow(); }));
         }
         TWeakPtr<SMmdViewer> Weak = SharedThis(this);
-        const bool bWidePage = Page == "Mapping" || Page == "Calibration";
+        const bool bWidePage = Page == "Mapping" || Page == "MappingOptions" || Page == "Calibration";
         PreferredPageSize = bWidePage ? FVector2D(880, 680) : Page == "Tracking" ? FVector2D(560, 700) : Page == "Parts" ? FVector2D(560, 680) : FVector2D(560, 520);
         const FVector2D Viewport = GetCachedGeometry().GetLocalSize();
         UpdatePanelLayout(Viewport);
@@ -945,7 +955,7 @@ public:
         if (Event.GetKey() == EKeys::H) { ToggleHud(); return FReply::Handled(); }
         if (Event.GetKey() == EKeys::Escape) { if (!bHudVisible) ToggleHud(); else if (bMenuOpen) CloseWindow(); else ToggleHud(); return FReply::Handled(); }
         if (!IsMenuBlocking() && (Event.GetKey() == EKeys::W || Event.GetKey() == EKeys::A || Event.GetKey() == EKeys::S || Event.GetKey() == EKeys::D
-            || Event.GetKey() == EKeys::SpaceBar || Event.GetKey() == EKeys::LeftShift || Event.GetKey() == EKeys::RightShift))
+            || Event.GetKey() == EKeys::E || Event.GetKey() == EKeys::Q))
         { PlacementKeys.Add(Event.GetKey()); return FReply::Handled(); }
         if (IsMenuBlocking()) return FReply::Handled();
         if (Event.GetKey() == EKeys::NumPadOne) Controller->SetView(1, Event.IsControlDown());
@@ -1205,15 +1215,15 @@ bool FMmdEffectToggleTest::RunTest(const FString& Parameters)
     ModelRoot->RegisterComponent();
     Controller->Rotation = FRotator::ZeroRotator;
     auto Controls = SNew(SMmdViewer, Controller);
-    Controls->PlacementKeys.Add(EKeys::LeftShift);
+    Controls->PlacementKeys.Add(EKeys::E);
     Controls->Tick(FGeometry(), 0, .1f);
     const float RaisedZ = Controller->ModelActor->GetActorLocation().Z;
-    TestTrue(TEXT("Shift raises the character"), RaisedZ > 0.f);
+    TestTrue(TEXT("E raises the character"), RaisedZ > 0.f);
     Controls->PlacementKeys.Reset();
-    Controls->PlacementKeys.Add(EKeys::SpaceBar);
+    Controls->PlacementKeys.Add(EKeys::Q);
     Controls->Tick(FGeometry(), 0, .1f);
     Controls->Tick(FGeometry(), .1, .1f);
-    TestTrue(TEXT("Space lowers the character after smooth reversal"), Controller->ModelActor->GetActorLocation().Z < RaisedZ);
+    TestTrue(TEXT("Q lowers the character after smooth reversal"), Controller->ModelActor->GetActorLocation().Z < RaisedZ);
     Controller->StopCharacterMovement();
     Controller->ModelActor->SetActorLocation(FVector::ZeroVector);
     Controller->MoveCharacter(FVector::ForwardVector, .02f);
@@ -1238,12 +1248,22 @@ bool FMmdEffectToggleTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Movement distance is consistent at 30 and 120 FPS"), At30.Equals(Travel(120, FVector::ForwardVector), .002));
     TestTrue(TEXT("Diagonal movement keeps the same speed"), FMath::IsNearlyEqual(At30.Size(), Travel(30, FVector(1, 1, 1)).Size(), .002));
     Controller->Rig = NewObject<UVtuberRigComponent>(Controller);
+    Controller->bTrackingReplay = Controller->bReplaySequenceRequested = true;
+    Controller->bFaceSeen = true; Controller->HandsSeen = 2;
+    TestEqual(TEXT("Replay uses the same start capture label"), Controller->TrackingActionLabel(), FString(TEXT("开启动捕")));
+    Controller->StopTrackingReplay();
+    TestFalse(TEXT("Stopping replay releases both replay gates"), Controller->bTrackingReplay || Controller->bReplaySequenceRequested);
+    TestFalse(TEXT("Stopping replay clears stale detection state"), Controller->bFaceSeen || Controller->HandsSeen != 0);
+    TestFalse(TEXT("Stopping replay alone never opens the camera"), Controller->Tracking.IsRunning());
     Controls->OpenPage("Calibration");
     TestTrue(TEXT("Calibration wizard opens inside the viewer"), Controls->CalibrationPanel.IsValid());
     Controls->CloseWindow();
     TestFalse(TEXT("Closing calibration releases its pending session"), Controls->CalibrationPanel.IsValid());
     Controller->Orbit(FVector2D(10.f, 0.f), false, false);
     TestTrue(TEXT("Horizontal orbit follows the corrected drag direction"), Controller->Rotation.Yaw > 0.f);
+    const float BeforeVerticalOrbit = Controller->Rotation.Pitch;
+    Controller->Orbit(FVector2D(0.f, 10.f), false, false);
+    TestTrue(TEXT("Vertical orbit follows the corrected drag direction"), Controller->Rotation.Pitch < BeforeVerticalOrbit);
     Controller->ShowcaseLight = World->SpawnActor<ADirectionalLight>();
     Controller->Rotation.Yaw = 180.f; Controller->UpdateCamera();
     const FVector FirstLight = Controller->KeyDirection;
@@ -1437,6 +1457,7 @@ void AMmdViewerController::BeginPlay()
 
 void AMmdViewerController::EndPlay(const EEndPlayReason::Type Reason)
 {
+    Upscaling.Restore();
     Tracking.Stop();
     if (Output) Output->Shutdown();
     if (Renderer) Renderer->Detach();
@@ -1687,7 +1708,7 @@ void AMmdViewerController::OnModelLoaded()
     Distance *= FMath::Clamp(FrameScale, 0.1f, 2.f);
     Target.Z = ModelCenter.Z * FMath::Clamp(TargetHeight, 0.f, 2.f);
     UpdateCamera();
-    Status = Missing ? FString::Printf(TEXT("已加载。%d 个材质未匹配到基础贴图，使用材质颜色。"), Missing) : TEXT("已加载。中键旋转；WASD 水平移动，Shift 上移，Space 下移。");
+    Status = Missing ? FString::Printf(TEXT("已加载。%d 个材质未匹配到基础贴图，使用材质颜色。"), Missing) : TEXT("已加载。中键旋转；WASD 水平移动，E 上移，Q 下移。");
     UE_LOG(LogTemp, Display, TEXT("MMD_LOADED plugin=VRM4U name=%s vertices=%d triangles=%d missing=%d textures=%d"), *ModelName, Vertices, Triangles, Missing, LoadedAsset->Textures.Num());
     Widget->CloseWindow();
     Widget->bHudVisible = bHudVisibleBeforeImport;
@@ -1714,6 +1735,9 @@ void AMmdViewerController::OnModelLoaded()
                 : CapturePage.Equals(TEXT("Nav"), ESearchCase::IgnoreCase) ? FName(TEXT("Main"))
                 : CapturePage.Equals(TEXT("Results"), ESearchCase::IgnoreCase) ? FName(TEXT("Results"))
                 : CapturePage.Equals(TEXT("Calibration"), ESearchCase::IgnoreCase) ? FName(TEXT("Calibration"))
+                : CapturePage.Equals(TEXT("MappingOptions"), ESearchCase::IgnoreCase) ? FName(TEXT("MappingOptions"))
+                : CapturePage.Equals(TEXT("Settings"), ESearchCase::IgnoreCase) ? FName(TEXT("Settings"))
+                : CapturePage.Equals(TEXT("Output"), ESearchCase::IgnoreCase) ? FName(TEXT("Output"))
                 : CapturePage.Equals(TEXT("Parts"), ESearchCase::IgnoreCase) ? FName(TEXT("Parts")) : NAME_None;
             if (!Page.IsNone())
             {
@@ -1782,6 +1806,39 @@ void AMmdViewerController::OnModelLoaded()
 void AMmdViewerController::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
+#if WITH_DEV_AUTOMATION_TESTS
+    int32 SingleUpscalingMode = INDEX_NONE;
+    if (ModelMesh && UpscalingQaStep == 0 && FParse::Value(FCommandLine::Get(), TEXT("HonkaiUpscalingMode="), SingleUpscalingMode))
+    {
+        SetUpscaling(static_cast<EHonkaiUpscalingMode>(SingleUpscalingMode));
+        UpscalingQaStep = 100;
+    }
+    if (ModelMesh && FParse::Param(FCommandLine::Get(), TEXT("HonkaiUpscalingQa")))
+    {
+        if (UpscalingQaStart == 0) UpscalingQaStart = FPlatformTime::Seconds();
+        if (UpscalingQaStep < 3 && FPlatformTime::Seconds() - UpscalingQaStart > 4.0 + 5.0 * UpscalingQaStep)
+        {
+            const EHonkaiUpscalingMode Modes[] = { EHonkaiUpscalingMode::DLAA, EHonkaiUpscalingMode::DLSSQuality, EHonkaiUpscalingMode::TSR };
+            auto Signature = []
+            {
+                FString Value;
+                for (const TCHAR* Name : { TEXT("r.AntiAliasingMethod"), TEXT("r.ScreenPercentage"), TEXT("r.TemporalAA.Upscaler"),
+                    TEXT("r.TemporalAA.Upsampling"), TEXT("r.DynamicRes.OperationMode"), TEXT("r.NGX.DLSS.Preset"), TEXT("r.NGX.DLSS.Enable") })
+                {
+                    const auto* Variable = IConsoleManager::Get().FindConsoleVariable(Name);
+                    Value += FString::Printf(TEXT("%s=%s@%x;"), Name, Variable ? *Variable->GetString() : TEXT("missing"),
+                        Variable ? uint32(Variable->GetFlags() & ECVF_SetByMask) : 0u);
+                }
+                return Value;
+            };
+            if (UpscalingQaStep == 0) UpscalingQaBaseline = Signature();
+            SetUpscaling(Modes[UpscalingQaStep++]);
+            if (UpscalingQaStep == 3)
+                UE_LOG(LogTemp, Display, TEXT("HONKAI_UPSCALING_QA_RESTORE ok=%d before=%s after=%s"),
+                    UpscalingQaBaseline == Signature(), *UpscalingQaBaseline, *Signature());
+        }
+    }
+#endif
     Enhancement.Tick();
     HandleGenerationStatus(Enhancement.GetStatus());
     FVtuberTrackingSnapshot Snapshot;
@@ -1863,11 +1920,33 @@ void AMmdViewerController::PreviewPart(const FString& Id)
     else PartVisibilityNotice = Error;
 }
 
-void AMmdViewerController::ToggleTracking()
+bool AMmdViewerController::IsTrackingReplay() const
 {
 #if WITH_DEV_AUTOMATION_TESTS
-    if (bTrackingReplay) { Tracking.Status = TEXT("当前为离线姿态回放，未启动摄像头"); return; }
+    return bTrackingReplay;
+#else
+    return false;
 #endif
+}
+FString AMmdViewerController::TrackingActionLabel()
+{
+    return Tracking.IsStopping() ? TEXT("正在停止…") : Tracking.IsRunning() ? TEXT("停止捕捉") : TEXT("开启动捕");
+}
+void AMmdViewerController::StopTrackingReplay()
+{
+#if WITH_DEV_AUTOMATION_TESTS
+    if (!bTrackingReplay) return;
+    bTrackingReplay = bReplaySequenceRequested = false;
+    ReplaySequence = {}; ReplaySnapshot = {}; ReplayFrameIndex = INDEX_NONE;
+    LastTrackingFrame = 0; LastTrackingSnapshot = {};
+    bFaceSeen = bPoseSeen = false; HandsSeen = 0;
+    if (Rig) Rig->SubmitSnapshot({});
+    Tracking.Status = TEXT("离线回放已停止");
+#endif
+}
+void AMmdViewerController::ToggleTracking()
+{
+    StopTrackingReplay();
     if (Tracking.IsRunning()) { Tracking.Stop(); LastTrackingFrame = 0; LastTrackingSnapshot = {}; bFaceSeen = bPoseSeen = false; HandsSeen = 0; }
     else if (Rig) Tracking.Start();
     else Tracking.Status = TEXT("请先导入角色");
@@ -2086,9 +2165,28 @@ void AMmdViewerController::SetBackground(int32 Preset)
     if (BackdropMaterial && Preset >= 0 && Preset < UE_ARRAY_COUNT(Colors)) BackdropMaterial->SetVectorParameterValue(TEXT("Tint"), Colors[Preset]);
 }
 
+void AMmdViewerController::SetUpscaling(EHonkaiUpscalingMode Mode)
+{
+    const FIntPoint Size = GEngine && GEngine->GameViewport && GEngine->GameViewport->Viewport
+        ? GEngine->GameViewport->Viewport->GetSizeXY() : FIntPoint::ZeroValue;
+    const bool Accepted = Upscaling.SetMode(Mode, FVector2D(Size.X, Size.Y), UpscalingNotice);
+    UE_LOG(LogTemp, Display, TEXT("HONKAI_UPSCALING requested=%d accepted=%d active=%d size=%dx%d reason=%s"),
+        int32(Mode), Accepted, int32(Upscaling.GetMode()), Size.X, Size.Y, *UpscalingNotice);
+}
+
+FString AMmdViewerController::UpscalingStatus() const
+{
+    const TCHAR* Name = Upscaling.GetMode() == EHonkaiUpscalingMode::DLAA ? TEXT("NVIDIA DLAA")
+        : Upscaling.GetMode() == EHonkaiUpscalingMode::DLSSQuality ? TEXT("NVIDIA DLSS 4.5 · 质量") : TEXT("TSR · DLSS 已关闭");
+    FString Reason;
+    FHonkaiUpscaling::IsSupported(Reason);
+    return FString(Name) + (UpscalingNotice.IsEmpty() ? (Reason.IsEmpty() ? FString() : TEXT("\n") + Reason) : TEXT("\n") + UpscalingNotice);
+}
+
 void AMmdViewerController::SetRenderScale(int32 Percent)
 {
     if (Percent != 100 && Percent != 150) return;
+    Upscaling.Restore(); UpscalingNotice.Empty();
     if (auto* Variable = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ScreenPercentage"))) Variable->Set(Percent, ECVF_SetByCode);
 }
 
@@ -2158,7 +2256,7 @@ void AMmdViewerController::Orbit(FVector2D Delta, bool Pan, bool Dolly)
 {
 	if (Dolly) { Zoom(-Delta.Y * 0.03f); return; }
 	if (Pan) { Target += (FRotationMatrix(Rotation).GetUnitAxis(EAxis::Y) * -Delta.X + FRotationMatrix(Rotation).GetUnitAxis(EAxis::Z) * Delta.Y) * Distance * 0.0008f; }
-	else { Rotation.Yaw += Delta.X * 0.3f; Rotation.Pitch = FMath::Clamp(Rotation.Pitch + Delta.Y * 0.3f, -89.9f, 89.9f); }
+	else { Rotation.Yaw += Delta.X * 0.3f; Rotation.Pitch = FMath::Clamp(Rotation.Pitch - Delta.Y * 0.3f, -89.9f, 89.9f); }
 	UpdateCamera();
 }
 void AMmdViewerController::Zoom(float Delta) { Distance = FMath::Clamp(Distance * FMath::Exp(-Delta * 0.12f), FMath::Max(1.f, ModelRadius * 0.08f), FMath::Max(1000.f, ModelRadius * 30)); UpdateCamera(); }

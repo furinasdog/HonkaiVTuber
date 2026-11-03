@@ -349,9 +349,10 @@ void SVtuberRigPanel::SetResponseValue(FName FieldName, float Value)
     ApplyResponse(ActiveChannel(), R);
 }
 
-void SVtuberRigPanel::Construct(const FArguments&, UVtuberRigComponent* InRig)
+void SVtuberRigPanel::Construct(const FArguments& Args, UVtuberRigComponent* InRig)
 {
     Rig = InRig;
+    SelectedTab = FMath::Clamp(Args._InitialTab, 0, 2);
     const auto& Theme = FMmdUiStyle::Get();
     ButtonStyle = Theme.Button; ComboStyle = Theme.Combo; SpinStyle = Theme.Spin;
     SliderStyle = Theme.Slider; CheckStyle = Theme.Check; RowStyle = Theme.Row;
@@ -600,6 +601,14 @@ void SVtuberRigPanel::Construct(const FArguments&, UVtuberRigComponent* InRig)
                 if (Rig->SetSettings(S)) MarkDirty();
             })[Label(CategoryNames[Index])], 8);
     }
+    AddRow(Options, Label(TEXT("默认手臂展开角（度）"), 13, Muted), 4);
+    AddRow(Options, SNew(SSpinBox<float>).Style(&SpinStyle).MinValue(0.f).MaxValue(90.f).MinSliderValue(0.f).MaxSliderValue(90.f).Delta(1.f)
+        .Value_Lambda([this] { return Rig.IsValid() ? Rig->GetSettings().IdleArmAngleDegrees : 20.f; })
+        .OnValueChanged_Lambda([this](float Value)
+        {
+            if (Rig.IsValid()) { auto S = Rig->GetSettings(); S.IdleArmAngleDegrees = Value; if (Rig->SetSettings(S)) MarkDirty(); }
+        }), 4);
+    AddRow(Options, Label(TEXT("0° 下垂，90° 平举；仅在手臂未被有效跟踪时使用。"), 11, Muted), 12);
     AddRow(Options, Label(TEXT("丢失追踪回退（秒）"), 13, Muted), 4);
     AddRow(Options, SNew(SSpinBox<float>).Style(&SpinStyle).MinValue(.05f).MaxValue(5.f).Delta(.01f)
         .Value_Lambda([this] { return Rig.IsValid() ? Rig->GetSettings().LostTrackingSeconds : .3f; })
