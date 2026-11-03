@@ -1244,6 +1244,15 @@ bool FMmdEffectToggleTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Closing calibration releases its pending session"), Controls->CalibrationPanel.IsValid());
     Controller->Orbit(FVector2D(10.f, 0.f), false, false);
     TestTrue(TEXT("Horizontal orbit follows the corrected drag direction"), Controller->Rotation.Yaw > 0.f);
+    Controller->ShowcaseLight = World->SpawnActor<ADirectionalLight>();
+    Controller->Rotation.Yaw = 180.f; Controller->UpdateCamera();
+    const FVector FirstLight = Controller->KeyDirection;
+    Controller->Orbit(FVector2D(100.f, 0.f), false, false);
+    const FVector NextLight = Controller->KeyDirection;
+    const double YawChange = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(
+        FVector::DotProduct(FirstLight.GetSafeNormal2D(), NextLight.GetSafeNormal2D()), -1.0, 1.0)));
+    TestTrue(TEXT("Preview key follows the camera yaw"), FMath::IsNearlyEqual(YawChange, 30.0, .001));
+    TestTrue(TEXT("Orbit preserves preview key elevation"), FMath::IsNearlyEqual(FirstLight.Z, NextLight.Z, .00001));
     World->DestroyWorld(false);
     return true;
 }
@@ -1391,6 +1400,7 @@ void AMmdViewerController::BeginPlay()
 	UCameraComponent* C = ViewerCamera->GetCameraComponent(); C->FieldOfView = 35; C->bConstrainAspectRatio = false;
     UHonkaiRenderInstance::ConfigureCamera(C);
     auto* Key = GetWorld()->SpawnActor<ADirectionalLight>();
+    ShowcaseLight = Key;
     auto* Light = CastChecked<UDirectionalLightComponent>(Key->GetLightComponent());
     Light->SetMobility(EComponentMobility::Movable);
     Light->SetIntensity(3.141593f);
@@ -1406,7 +1416,9 @@ void AMmdViewerController::BeginPlay()
 #if WITH_DEV_AUTOMATION_TESTS
     FParse::Value(FCommandLine::Get(), TEXT("MmdLightPitch="), LightPitch);
 #endif
-    Key->SetActorRotation(FRotator(LightPitch, LightYaw + 180.f, 0));
+    ShowcaseLightPitch = LightPitch;
+    ShowcaseLightYawOffset = LightYaw;
+    Key->SetActorRotation(FRotator(LightPitch, LightYaw + Rotation.Yaw, 0));
     KeyDirection = -Key->GetActorForwardVector();
     Renderer = NewObject<UHonkaiRenderInstance>(this);
     UpdateCamera();
@@ -2130,6 +2142,15 @@ void AMmdViewerController::UpdateCamera()
 {
 	if (!ViewerCamera) return;
 	ViewerCamera->SetActorLocationAndRotation(Target - Rotation.Vector() * Distance, Rotation);
+    if (ShowcaseLight)
+    {
+        float ReferenceYaw = Rotation.Yaw;
+#if WITH_DEV_AUTOMATION_TESTS
+        if (FParse::Param(FCommandLine::Get(), TEXT("MmdWorldLight"))) ReferenceYaw = 180.f;
+#endif
+        ShowcaseLight->SetActorRotation(FRotator(ShowcaseLightPitch, ReferenceYaw + ShowcaseLightYawOffset, 0));
+        KeyDirection = -ShowcaseLight->GetActorForwardVector();
+    }
 	ViewerCamera->GetCameraComponent()->ProjectionMode = bOrthographic ? ECameraProjectionMode::Orthographic : ECameraProjectionMode::Perspective;
 	ViewerCamera->GetCameraComponent()->OrthoWidth = Distance * 0.65f;
 }

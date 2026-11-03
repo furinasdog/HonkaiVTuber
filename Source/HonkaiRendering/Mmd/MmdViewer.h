@@ -15,6 +15,7 @@
 class UVrmAssetListObject;
 class UMaterialInterface;
 class UHonkaiRenderInstance;
+class ADirectionalLight;
 class UMaterialInstanceDynamic;
 class SMmdViewer;
 class USkeletalMeshComponent;
@@ -119,6 +120,8 @@ private:
     UPROPERTY() TObjectPtr<USkeletalMeshComponent> ModelMesh;
     UPROPERTY() TObjectPtr<USkinnedMeshComponent> OutlineMesh;
     UPROPERTY() TObjectPtr<UHonkaiRenderInstance> Renderer;
+    UPROPERTY() TObjectPtr<ADirectionalLight> ShowcaseLight;
+    float ShowcaseLightPitch = -15.f, ShowcaseLightYawOffset = -5.f;
     UPROPERTY() TMap<int32, TObjectPtr<UTexture2D>> OriginalFaceMaps;
     UPROPERTY() TMap<int32, TObjectPtr<UTexture2D>> EnhancedFaceMaps;
     TArray<FLinearColor> SurfaceTints;
