@@ -18,6 +18,8 @@
 #include "Engine/SkeletalMesh.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/Material.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/EngineVersion.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
@@ -71,6 +73,10 @@
 THIRD_PARTY_INCLUDES_START
 #include <shobjidl.h>
 THIRD_PARTY_INCLUDES_END
+#endif
+
+#if __has_include("HonkaiBuildStamp.h")
+#include "HonkaiBuildStamp.h"
 #endif
 
 namespace
@@ -556,10 +562,45 @@ public:
         else if (Page == "Application")
         {
             Title = TEXT("应用");
+            Add(Button(TEXT("关于"), [this] { OpenPage("About"); }));
             Add(Label(TEXT("NVIDIA DLSS\nPowered by NVIDIA. DLSS 为 NVIDIA 商标。\n第三方许可见安装目录 Licenses。"), 11, Muted));
             Add(Button(TEXT("打开用户数据目录"), [] { FPlatformProcess::ExploreFolder(*FMmdEnhancement::UserDataDir()); }));
             Add(Button(TEXT("清理生成缓存"), [this] { OpenPage("ClearCache"); }));
             Add(Label(TEXT("中键旋转 · Shift + 中键平移 · 滚轮缩放\n小键盘切换视角 · Home 重新取景\nH 隐藏或恢复界面"), 12, Muted));
+        }
+        else if (Page == "About")
+        {
+            Title = TEXT("关于");
+            const FString Product(TEXT("HonkaiVTuber"));
+#if defined(HONKAI_BUILD_STAMP)
+            const FString Version(HONKAI_BUILD_STAMP);
+            const FString BuildTime(HONKAI_BUILD_TIME);
+            const FString Contributors(HONKAI_BUILD_CONTRIBUTORS);
+#else
+            const FString Version(TEXT("开发构建"));
+            const FString BuildTime(TEXT("未记录"));
+            const FString Contributors(TEXT("由 Build-Release.ps1 生成"));
+#endif
+            Add(Label(FString::Printf(TEXT("%s · %s\n构建时间：%s\nUnreal Engine %s"),
+                *Product, *Version, *BuildTime, *FEngineVersion::Current().ToString(EVersionComponent::Patch)), 13));
+            Add(Label(TEXT("插件版本"), 13));
+            FString Plugins;
+            for (const TCHAR* Name : {TEXT("HonkaiToonRenderer"), TEXT("HonkaiMotionCapture"), TEXT("VRM4U"), TEXT("Spout2_DX12"), TEXT("DLSS")})
+            {
+                const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(Name);
+                if (Plugin && Plugin->IsEnabled())
+                    Plugins += FString::Printf(TEXT("%s  %s\n"), Name, *Plugin->GetDescriptor().VersionName);
+            }
+            Add(Label(Plugins.TrimEnd(), 12, Muted));
+            Add(Label(TEXT("贡献者"), 13));
+            Add(Label(Contributors, 12, Muted));
+            Add(Label(TEXT("开源许可"), 13));
+            Add(Label(TEXT("项目、Honkai Toon Renderer、Honkai Motion Capture、VRM4U 和 UMT：MIT\nAssimp：BSD-3-Clause · Spout2 SDK：BSD-2-Clause\nMediaPipe 和 OpenCV：Apache-2.0 · Bullet：Zlib"), 12, Muted));
+            const FString LicenseDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("../Licenses"));
+            if (FPaths::DirectoryExists(LicenseDir))
+                Add(Button(TEXT("打开完整许可"), [LicenseDir] { FPlatformProcess::ExploreFolder(*LicenseDir); }));
+            Add(Label(FString::Printf(TEXT("%s uses Unreal® Engine. Unreal® is a trademark or registered trademark of Epic Games, Inc. in the United States of America and elsewhere.\nUnreal® Engine, Copyright 1998 – %d, Epic Games, Inc. All rights reserved."),
+                *Product, FDateTime::UtcNow().GetYear()), 11, Muted));
         }
         else if (Page == "Tracking")
         {
@@ -1738,6 +1779,7 @@ void AMmdViewerController::OnModelLoaded()
                 : CapturePage.Equals(TEXT("MappingOptions"), ESearchCase::IgnoreCase) ? FName(TEXT("MappingOptions"))
                 : CapturePage.Equals(TEXT("Settings"), ESearchCase::IgnoreCase) ? FName(TEXT("Settings"))
                 : CapturePage.Equals(TEXT("Output"), ESearchCase::IgnoreCase) ? FName(TEXT("Output"))
+                : CapturePage.Equals(TEXT("About"), ESearchCase::IgnoreCase) ? FName(TEXT("About"))
                 : CapturePage.Equals(TEXT("Parts"), ESearchCase::IgnoreCase) ? FName(TEXT("Parts")) : NAME_None;
             if (!Page.IsNone())
             {

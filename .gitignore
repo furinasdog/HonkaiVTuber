@@ -48,3 +48,6 @@ __pycache__/
 !/Plugins/HonkaiMotionCapture/
 
 !/Plugins/HonkaiToonRenderer/
+
+# Local release outputs
+/dist/

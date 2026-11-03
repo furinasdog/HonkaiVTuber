@@ -26,6 +26,8 @@ ZIP 中应保留 PMX 与贴图的相对目录结构。首版支持 Windows 上�
 
 ## 构建
 
+Windows Shipping 一键打包和依赖准备见 [构建文档](doc/BUILD.md)。
+
 需要已安装的 UE 5.8、兼容的 Visual Studio C++ 工具链和 Windows SDK。基础脚本检查仅使用 Python 标准库；Python 不是应用运行时依赖。
 
 ```powershell
