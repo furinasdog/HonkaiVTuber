@@ -2,7 +2,7 @@
 import unreal
 
 for name in ("M_Toon", "M_ToonTwoSided", "M_ToonTranslucent", "M_ToonTranslucentTwoSided", "M_Outline", "M_FaceOutline"):
-    material = unreal.load_asset("/Game/MmdViewer/" + name)
+    material = unreal.load_asset("/HonkaiToonRenderer/Materials/" + name)
     assert material, name
     unreal.MaterialEditingLibrary.set_base_material_usage(material, unreal.MaterialUsage.MATUSAGE_MORPH_TARGETS)
     unreal.MaterialEditingLibrary.recompile_material(material)

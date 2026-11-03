@@ -1,4 +1,5 @@
 #include "MmdViewer.h"
+#include "HonkaiRenderInstance.h"
 #include "MmdUiStyle.h"
 #include "Async/Async.h"
 #include "Camera/CameraActor.h"
@@ -51,6 +52,8 @@
 #include "Widgets/SOverlay.h"
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "Animation/Skeleton.h"
+#include "ReferenceSkeleton.h"
 #include "Animation/MorphTarget.h"
 #include "Layout/ArrangedChildren.h"
 #endif
@@ -102,53 +105,6 @@ namespace
             TEXT("顔"), TEXT("脸"), TEXT("脖"), TEXT("首"), TEXT("手"), TEXT("腿"), TEXT("足")})
             if (Name.Contains(Word)) return 1.f;
         return 0.f;
-    }
-
-    bool CopyToonRamp(UTexture2D* Texture, TArray<FColor>& Pixels, int32 Row)
-    {
-        auto* Data = Texture ? Texture->GetPlatformData() : nullptr;
-        if (!Data || Data->PixelFormat != PF_B8G8R8A8 || Data->Mips.IsEmpty()
-            || Row < 0 || Row >= 256 || Pixels.Num() != 256 * 256) return false;
-        auto& Mip = Data->Mips[0];
-        if (Mip.SizeX <= 0 || Mip.SizeY <= 0 || Mip.BulkData.GetBulkDataSize() < int64(Mip.SizeX) * Mip.SizeY * int64(sizeof(FColor))) return false;
-        const FColor* Source = static_cast<const FColor*>(Mip.BulkData.LockReadOnly());
-        if (!Source) { Mip.BulkData.Unlock(); return false; }
-        // PMX toon maps run from light at the top to shadow at the bottom.
-        for (int32 X = 0; X < 256; ++X)
-        {
-            const int32 Y = FMath::RoundToInt((255 - X) * (Mip.SizeY - 1) / 255.f);
-            Pixels[Row * 256 + X] = Source[Y * Mip.SizeX + Mip.SizeX / 2];
-        }
-        Mip.BulkData.Unlock();
-        return true;
-    }
-
-    UTexture2D* BuildToonAtlas(UVrmAssetListObject* Asset, TMap<UTexture*, uint8>& Rows)
-    {
-        TArray<FColor> Pixels;
-        Pixels.SetNumUninitialized(256 * 256);
-        for (int32 Y = 0; Y < 256; ++Y)
-            for (int32 X = 0; X < 256; ++X)
-                Pixels[Y * 256 + X] = FMath::Lerp(FLinearColor(0.64f, 0.52f, 0.61f), FLinearColor::White, X / 255.f).ToFColorSRGB();
-        for (const auto& Slot : Asset->SkeletalMesh->GetMaterials())
-        {
-            UTexture* Texture = nullptr;
-            if (!Slot.MaterialInterface || !Slot.MaterialInterface->GetTextureParameterValue(TEXT("mmd_ToonTexture"), Texture)
-                || Rows.Contains(Texture) || Rows.Num() >= 255) continue;
-            const uint8 Row = uint8(Rows.Num() + 1);
-            if (CopyToonRamp(Cast<UTexture2D>(Texture), Pixels, Row)) Rows.Add(Texture, Row);
-        }
-        auto* Atlas = UTexture2D::CreateTransient(256, 256, PF_B8G8R8A8);
-        if (!Atlas) return nullptr;
-        Atlas->SRGB = true;
-        Atlas->Filter = TF_Bilinear;
-        Atlas->AddressX = Atlas->AddressY = TA_Clamp;
-        auto& Bulk = Atlas->GetPlatformData()->Mips[0].BulkData;
-        FMemory::Memcpy(Bulk.Lock(LOCK_READ_WRITE), Pixels.GetData(), Pixels.Num() * sizeof(FColor));
-        Bulk.Unlock();
-        Asset->Textures.Add(Atlas);
-        UE_LOG(LogTemp, Display, TEXT("MMD_TOON_RAMPS count=%d"), Rows.Num());
-        return Atlas;
     }
 
     bool SafeFaceTextureName(const FString& Name)
@@ -1003,26 +959,6 @@ public:
 };
 
 #if WITH_DEV_AUTOMATION_TESTS
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMmdToonRampTest, "HonkaiRendering.Rendering.ToonRamp",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-bool FMmdToonRampTest::RunTest(const FString& Parameters)
-{
-    auto* Texture = UTexture2D::CreateTransient(1, 2, PF_B8G8R8A8);
-    auto& Bulk = Texture->GetPlatformData()->Mips[0].BulkData;
-    auto* Source = static_cast<FColor*>(Bulk.Lock(LOCK_READ_WRITE));
-    Source[0] = FColor::White;
-    Source[1] = FColor(180, 160, 200);
-    Bulk.Unlock();
-    TArray<FColor> Pixels;
-    Pixels.Init(FColor::Black, 256 * 256);
-    TestTrue(TEXT("Valid PMX gradient copies"), CopyToonRamp(Texture, Pixels, 1));
-    TestEqual(TEXT("Shadow starts the row"), Pixels[256], FColor(180, 160, 200));
-    TestEqual(TEXT("Light ends the row"), Pixels[511], FColor::White);
-    TestEqual(TEXT("Other rows unchanged"), Pixels[255], FColor::Black);
-    TestFalse(TEXT("Missing source falls back"), CopyToonRamp(nullptr, Pixels, 1));
-    TestFalse(TEXT("Out of bounds row rejected"), CopyToonRamp(Texture, Pixels, 256));
-    return true;
-}
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMmdFaceProfileTest, "HonkaiRendering.Rendering.FaceProfile",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FMmdFaceProfileTest::RunTest(const FString& Parameters)
@@ -1066,18 +1002,18 @@ bool FMmdMaterialsTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Japanese hair uses hair styling"), OutlineRegion(TEXT("髪_01")), 2.f);
     TestEqual(TEXT("Unclassified mixed materials keep the default outline"), OutlineRegion(TEXT("body")), 0.f);
 
-    for (const TCHAR* Path : {TEXT("/Game/MmdViewer/M_Toon"), TEXT("/Game/MmdViewer/M_ToonTwoSided")})
+    for (const TCHAR* Path : {TEXT("/HonkaiToonRenderer/Materials/M_Toon"), TEXT("/HonkaiToonRenderer/Materials/M_ToonTwoSided")})
     {
         auto* Material = LoadObject<UMaterial>(nullptr, Path);
         if (!TestNotNull(TEXT("Shared surface material exists"), Material)) return false;
         TestTrue(TEXT("Surface receives real lighting and shadows"), Material->GetShadingModels().HasShadingModel(MSM_DefaultLit));
         TestTrue(TEXT("Source cutout alpha is retained"), Material->GetBlendMode() == BLEND_Masked);
     }
-    auto* Cel = LoadObject<UMaterial>(nullptr, TEXT("/Game/MmdViewer/M_CelLighting"));
+    auto* Cel = LoadObject<UMaterial>(nullptr, TEXT("/HonkaiToonRenderer/Materials/M_CelLighting"));
     if (!TestNotNull(TEXT("Cel pass exists"), Cel)) return false;
     TestTrue(TEXT("Cel pass uses scene lighting"), Cel->MaterialDomain == MD_PostProcess);
     TestTrue(TEXT("GBuffer sampling precedes temporal upscaling"), Cel->BlendableLocation == BL_SceneColorBeforeDOF);
-    for (const TCHAR* Path : {TEXT("/Game/MmdViewer/M_Outline"), TEXT("/Game/MmdViewer/M_FaceOutline")})
+    for (const TCHAR* Path : {TEXT("/HonkaiToonRenderer/Materials/M_Outline"), TEXT("/HonkaiToonRenderer/Materials/M_FaceOutline")})
     {
         auto* Material = LoadObject<UMaterial>(nullptr, Path);
         if (!TestNotNull(TEXT("Outline material exists"), Material)) return false;
@@ -1089,23 +1025,37 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMmdEffectToggleTest, "HonkaiRendering.UI.Enhan
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FMmdEffectToggleTest::RunTest(const FString& Parameters)
 {
-    auto* Parent = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/MmdViewer/M_Toon"));
+    auto* Parent = LoadObject<UMaterialInterface>(nullptr, TEXT("/HonkaiToonRenderer/Materials/M_Toon.M_Toon"));
     if (!TestNotNull(TEXT("Shared material available"), Parent)) return false;
     const UWorld::InitializationValues Values = UWorld::InitializationValues().AllowAudioPlayback(false).CreatePhysicsScene(false).CreateNavigation(false).CreateAISystem(false);
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false, NAME_None, nullptr, true, ERHIFeatureLevel::Num, &Values);
     if (!TestNotNull(TEXT("Test world created"), World)) return false;
     auto* Controller = World->SpawnActor<AMmdViewerController>();
-    auto* Surface = UMaterialInstanceDynamic::Create(Parent, Controller);
     auto* Original = UTexture2D::CreateTransient(1, 1);
     auto* Enhanced = UTexture2D::CreateTransient(1, 1);
-    Controller->SurfaceMaterials.Add(Surface);
+    for (UTexture2D* Map : { Original, Enhanced }) { Map->SRGB = false; Map->AddressX = Map->AddressY = TA_Clamp; }
     Controller->SurfaceTints.Add(FLinearColor(.8f, .7f, .6f, .4f));
-    Surface->SetVectorParameterValue(TEXT("Tint"), Controller->SurfaceTints[0]);
     Controller->MaterialNames.Add(TEXT("Face"));
     Controller->OriginalFaceMaps.Add(0, Original);
     Controller->EnhancedFaceMaps.Add(0, Enhanced);
     Controller->ViewerCamera = World->SpawnActor<ACameraActor>();
     Controller->ViewerCamera->SetActorLocationAndRotation(FVector(50, 60, 70), FRotator(5, 15, 0));
+    auto* Skeleton = NewObject<USkeleton>(Controller);
+    {
+        FReferenceSkeletonModifier Modifier(Skeleton);
+        Modifier.Add(FMeshBoneInfo(TEXT("root"), TEXT("root"), INDEX_NONE), FTransform::Identity);
+    }
+    auto* Asset = NewObject<USkeletalMesh>(Controller);
+    Asset->SetSkeleton(Skeleton); Asset->SetRefSkeleton(Skeleton->GetReferenceSkeleton());
+    Asset->GetMaterials().Add(FSkeletalMaterial(Parent));
+    auto* Mesh = NewObject<USkeletalMeshComponent>(Controller); Mesh->SetSkeletalMesh(Asset);
+    Controller->Renderer = NewObject<UHonkaiRenderInstance>(Controller);
+    TArray<FHonkaiSurfaceInput> Inputs; Inputs.SetNum(1); Inputs[0].Tint = Controller->SurfaceTints[0];
+    FString BindError;
+    if (!TestTrue(TEXT("Host uses the plugin bind interface"), Controller->Renderer->Bind({Mesh, nullptr, Controller->ViewerCamera->GetCameraComponent()},
+        Inputs, Controller->OriginalFaceMaps, {}, BindError))) { AddError(BindError); World->DestroyWorld(false); return false; }
+    auto* Surface = Cast<UMaterialInstanceDynamic>(Mesh->GetMaterial(0));
+    if (!TestNotNull(TEXT("Plugin surface material"), Surface)) { World->DestroyWorld(false); return false; }
     const FTransform Camera = Controller->ViewerCamera->GetActorTransform();
     const FVector Light = Controller->KeyDirection;
     Controller->SetEnhanced(true);
@@ -1189,6 +1139,57 @@ bool FMmdEffectToggleTest::RunTest(const FString& Parameters)
     IFileManager::Get().Delete(*(FMmdEnhancement::UserDataDir() / TEXT("Models") / (FixtureHash.ToString().ToLower() + TEXT(".json"))));
     IFileManager::Get().Delete(*StateFixture);
     Controller->LoadedModelPath.Empty();
+    // Exercise profile-state commit with synthetic textures; no user profile path is set.
+    Controller->Renderer->Detach();
+    Asset->GetMaterials().Add(FSkeletalMaterial(Parent));
+    Controller->SurfaceTints.Add(FLinearColor(.7f, .6f, .5f, .8f));
+    Controller->MaterialNames.Add(TEXT("FaceSecond"));
+    Inputs.SetNum(2); Inputs[1].Tint = Controller->SurfaceTints[1];
+    auto* SecondOriginal = UTexture2D::CreateTransient(1, 1);
+    auto* SecondEnhanced = UTexture2D::CreateTransient(1, 1);
+    for (UTexture2D* Map : { SecondOriginal, SecondEnhanced }) { Map->SRGB = false; Map->AddressX = Map->AddressY = TA_Clamp; }
+    Controller->OriginalFaceMaps.Add(1, SecondOriginal);
+    if (!TestTrue(TEXT("Two-slot profile fixture binds"), Controller->Renderer->Bind({Mesh, nullptr, Controller->ViewerCamera->GetCameraComponent()},
+        Inputs, Controller->OriginalFaceMaps, {}, BindError))) { AddError(BindError); World->DestroyWorld(false); return false; }
+    FHonkaiFaceMaps GoodMaps; GoodMaps.Add(0, Enhanced); GoodMaps.Add(1, SecondEnhanced);
+    FMmdModelState GoodState = Controller->ModelState;
+    GoodState.MaterialIndex = 1; GoodState.ParametersJson = TEXT("{\"resolution\":512}"); GoodState.ProfileDirectory = TEXT("synthetic-valid-profile");
+    Controller->PreviewMaterial(0);
+    TestTrue(TEXT("Valid two-slot profile commits atomically"), Controller->CommitGeneratedProfile(GoodMaps, GoodState, true));
+    TestEqual(TEXT("Successful profile commit restores the source tint preview"), Controller->GetPreviewMaterial(), INDEX_NONE);
+    TestEqual(TEXT("Committed cache retains both slots"), Controller->EnhancedFaceMaps.Num(), 2);
+    for (int32 I = 0; I < 2; ++I)
+    {
+        auto* ActiveSurface = Cast<UMaterialInstanceDynamic>(Mesh->GetMaterial(I));
+        UTexture* Visible = nullptr; ActiveSurface->GetTextureParameterValue(TEXT("FaceMap"), Visible);
+        TestTrue(TEXT("Each successful slot uses its candidate texture"), Visible == GoodMaps[I]);
+    }
+    const FMmdModelState BeforeFailure = Controller->ModelState;
+    auto* NoMips = NewObject<UTexture2D>();
+    auto* NoMipData = new FTexturePlatformData(); NoMipData->SizeX = NoMipData->SizeY = 1; NoMipData->PixelFormat = PF_B8G8R8A8;
+    NoMips->SetPlatformData(NoMipData); NoMips->SRGB = false; NoMips->AddressX = NoMips->AddressY = TA_Clamp;
+    FHonkaiFaceMaps BadMaps = GoodMaps; BadMaps[0] = NoMips;
+    FMmdModelState RejectedState = GoodState;
+    RejectedState.MaterialIndex = 0; RejectedState.ParametersJson = TEXT("{\"resolution\":1024}"); RejectedState.ProfileDirectory = TEXT("must-not-commit");
+    Controller->PreviewMaterial(1);
+    for (bool bEnableCandidate : {false, true})
+    {
+        TestFalse(TEXT("An unusable candidate is rejected even when restoring disabled enhancement"),
+            Controller->CommitGeneratedProfile(BadMaps, RejectedState, bEnableCandidate));
+        TestEqual(TEXT("Failed preparation retains prior material selection"), Controller->ModelState.MaterialIndex, BeforeFailure.MaterialIndex);
+        TestEqual(TEXT("Failed preparation retains prior parameters"), Controller->ModelState.ParametersJson, BeforeFailure.ParametersJson);
+        TestEqual(TEXT("Failed preparation retains prior profile path"), Controller->ModelState.ProfileDirectory, BeforeFailure.ProfileDirectory);
+        TestEqual(TEXT("Failed preparation retains prior saved enable flag"), Controller->ModelState.bEnhanced, BeforeFailure.bEnhanced);
+        TestTrue(TEXT("Failed preparation retains prior enabled choice"), Controller->IsEnhanced());
+        TestEqual(TEXT("Failed preparation retains the active temporary preview"), Controller->GetPreviewMaterial(), 1);
+        TestTrue(TEXT("Failed preparation retains both cached maps"), Controller->EnhancedFaceMaps[0] == GoodMaps[0] && Controller->EnhancedFaceMaps[1] == GoodMaps[1]);
+        for (int32 I = 0; I < 2; ++I)
+        {
+            UTexture* Visible = nullptr;
+            Cast<UMaterialInstanceDynamic>(Mesh->GetMaterial(I))->GetTextureParameterValue(TEXT("FaceMap"), Visible);
+            TestTrue(TEXT("Failed preparation retains the prior rendered map"), Visible == GoodMaps[I]);
+        }
+    }
     auto Menu = SNew(SMmdViewer, Controller);
     for (const FName Page : {FName("Model"), FName("Rendering"), FName("Background"), FName("Settings"), FName("Generation"), FName("FaceMaterial")})
     {
@@ -1384,33 +1385,11 @@ void AMmdViewerController::BeginPlay()
         if (bTrackingReplay) Tracking.Status = TEXT("离线姿态回放，不占用摄像头");
     }
 #endif
-	ToonMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/MmdViewer/M_Toon.M_Toon"));
-	ToonTwoSidedMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/MmdViewer/M_ToonTwoSided.M_ToonTwoSided"));
-	OutlineMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/MmdViewer/M_Outline.M_Outline"));
-	FaceOutlineMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/MmdViewer/M_FaceOutline.M_FaceOutline"));
-	TranslucentMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/MmdViewer/M_ToonTranslucent.M_ToonTranslucent"));
-	TranslucentTwoSidedMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/MmdViewer/M_ToonTranslucentTwoSided.M_ToonTranslucentTwoSided"));
     ImportTemplate = NewObject<UVrmAssetListObject>(this);
     ImportTemplate->MtoonUnlitSet = LoadObject<UVrmImportMaterialSet>(nullptr, TEXT("/VRM4U/ImportDataSet/UE5/DS_VRM_UE5_MToonUnLit.DS_VRM_UE5_MToonUnLit"));
 	ViewerCamera = GetWorld()->SpawnActor<ACameraActor>(); SetViewTarget(ViewerCamera);
 	UCameraComponent* C = ViewerCamera->GetCameraComponent(); C->FieldOfView = 35; C->bConstrainAspectRatio = false;
-	C->PostProcessSettings.bOverride_AutoExposureMethod = true; C->PostProcessSettings.AutoExposureMethod = AEM_Manual;
-	C->PostProcessSettings.bOverride_AutoExposureBias = true; C->PostProcessSettings.AutoExposureBias = 0;
-	C->PostProcessSettings.bOverride_AutoExposureApplyPhysicalCameraExposure = true; C->PostProcessSettings.AutoExposureApplyPhysicalCameraExposure = false;
-	// Keep authored display colors instead of filmic grey whites and desaturated reds.
-    C->PostProcessSettings.bOverride_ToneCurveAmount = true; C->PostProcessSettings.ToneCurveAmount = 0;
-    C->PostProcessSettings.bOverride_ExpandGamut = true; C->PostProcessSettings.ExpandGamut = 0;
-    C->PostProcessSettings.bOverride_BlueCorrection = true; C->PostProcessSettings.BlueCorrection = 0;
-    C->PostProcessSettings.bOverride_LocalExposureHighlightContrastScale = true; C->PostProcessSettings.LocalExposureHighlightContrastScale = 1;
-    C->PostProcessSettings.bOverride_LocalExposureShadowContrastScale = true; C->PostProcessSettings.LocalExposureShadowContrastScale = 1;
-    C->PostProcessSettings.bOverride_BloomIntensity = true; C->PostProcessSettings.BloomIntensity = 1.f;
-    C->PostProcessSettings.bOverride_BloomThreshold = true; C->PostProcessSettings.BloomThreshold = 0.85f;
-	C->PostProcessSettings.bOverride_VignetteIntensity = true; C->PostProcessSettings.VignetteIntensity = 0;
-    C->PostProcessSettings.bOverride_AmbientOcclusionIntensity = true; C->PostProcessSettings.AmbientOcclusionIntensity = 0;
-    C->PostProcessSettings.bOverride_DynamicGlobalIlluminationMethod = true;
-    C->PostProcessSettings.DynamicGlobalIlluminationMethod = EDynamicGlobalIlluminationMethod::None;
-    C->PostProcessSettings.bOverride_ReflectionMethod = true;
-    C->PostProcessSettings.ReflectionMethod = EReflectionMethod::None;
+    UHonkaiRenderInstance::ConfigureCamera(C);
     auto* Key = GetWorld()->SpawnActor<ADirectionalLight>();
     auto* Light = CastChecked<UDirectionalLightComponent>(Key->GetLightComponent());
     Light->SetMobility(EComponentMobility::Movable);
@@ -1425,16 +1404,7 @@ void AMmdViewerController::BeginPlay()
     FParse::Value(FCommandLine::Get(), TEXT("MmdLightYaw="), LightYaw);
     Key->SetActorRotation(FRotator(-45.f, LightYaw + 180.f, 0));
     KeyDirection = -Key->GetActorForwardVector();
-    if (!FParse::Param(FCommandLine::Get(), TEXT("MmdBaseColor")))
-    {
-        auto* Cel = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/MmdViewer/M_CelLighting"));
-        if (Cel)
-        {
-            CelPass = UMaterialInstanceDynamic::Create(Cel, C);
-            CelPass->SetVectorParameterValue(TEXT("LightDirection"), FLinearColor(-Key->GetActorForwardVector()));
-            C->PostProcessSettings.AddBlendable(CelPass, 1.f);
-        }
-    }
+    Renderer = NewObject<UHonkaiRenderInstance>(this);
     UpdateCamera();
     Output = NewObject<UVtuberOutput>(this);
     Output->Initialize(ViewerCamera, C, {});
@@ -1453,6 +1423,7 @@ void AMmdViewerController::EndPlay(const EEndPlayReason::Type Reason)
 {
     Tracking.Stop();
     if (Output) Output->Shutdown();
+    if (Renderer) Renderer->Detach();
 	Enhancement.Cancel();
 	if (Widget) Widget->CloseWindow();
 	if (Widget && GEngine && GEngine->GameViewport) GEngine->GameViewport->RemoveViewportWidgetContent(Widget.ToSharedRef());
@@ -1558,100 +1529,67 @@ void AMmdViewerController::OnModelLoaded()
 {
     bBusy = false;
     if (!PendingAsset || !PendingAsset->SkeletalMesh) { Status = TEXT("VRM4U 无法读取此 PMX，详见输出日志。"); UE_LOG(LogTemp, Error, TEXT("MMD_LOAD_FAILED %s"), *PendingPath); Widget->OpenPage("Status"); return; }
-    if (!ToonMaterial || !ToonTwoSidedMaterial || !TranslucentMaterial || !TranslucentTwoSidedMaterial || !OutlineMaterial || !FaceOutlineMaterial) { Status = TEXT("缺少卡通材质，请运行 Scripts/setup_viewer.py。"); PendingAsset = nullptr; Widget->OpenPage("Status"); return; }
     PendingAsset->SkeletalMesh->CalculateExtendedBounds();
-    TMap<UTexture*, uint8> RampRows;
-    if (auto* Atlas = BuildToonAtlas(PendingAsset, RampRows); Atlas && CelPass)
-        CelPass->SetTextureParameterValue(TEXT("ToonAtlas"), Atlas);
-    // The plugin leaves PMX textures in CPU memory for the runtime caller to upload.
-    for (UTexture2D* Texture : PendingAsset->Textures) if (Texture && !Texture->GetResource()) Texture->UpdateResource();
     auto* NewActor = GetWorld()->SpawnActor<AActor>();
     auto* Mesh = NewObject<USkeletalMeshComponent>(NewActor); NewActor->SetRootComponent(Mesh); Mesh->RegisterComponent();
     Mesh->SetSkeletalMesh(PendingAsset->SkeletalMesh); Mesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly); Mesh->SetSimulatePhysics(false); Mesh->SetCastShadow(true);
-    Mesh->SetRenderCustomDepth(true); Mesh->SetCustomDepthStencilValue(1);
     Mesh->bPauseAnims = false;
     auto* Outline = NewObject<UVrmPoseableMeshComponent>(NewActor);
     Outline->SetupAttachment(Mesh); Outline->RegisterComponent(); Outline->SetSkinnedAssetAndUpdate(PendingAsset->SkeletalMesh);
     Outline->SetCollisionEnabled(ECollisionEnabled::NoCollision); Outline->SetCastShadow(false);
     Outline->SetLeaderPoseComponent(Mesh); Outline->AddTickPrerequisiteComponent(Mesh);
-    const bool bBaseColorOnly = FParse::Param(FCommandLine::Get(), TEXT("MmdBaseColor"));
     const auto FaceMaps = LoadFaceMaps(ImportDirectory / PendingPath, PendingAsset);
-    SurfaceMaterials.Reset(); OriginalOutlines.Reset(); EnhancedOutlines.Reset(); SurfaceTints.Reset();
-    OriginalFaceMaps.Reset(); EnhancedFaceMaps.Reset(); MaterialNames.Reset();
-    for (const auto& Entry : FaceMaps) OriginalFaceMaps.Add(Entry.Key, Entry.Value);
-    Outline->SetVisibility(!bBaseColorOnly);
+    FHonkaiFaceMaps NewOriginalFaceMaps;
+    for (const auto& Entry : FaceMaps) NewOriginalFaceMaps.Add(Entry.Key, Entry.Value);
+    TArray<FHonkaiSurfaceInput> SurfaceInputs;
+    TArray<FLinearColor> NewSurfaceTints;
+    TArray<FString> NewMaterialNames;
     int32 Missing = 0;
     for (int32 I = 0; I < Mesh->GetNumMaterials(); ++I)
     {
         UMaterialInterface* Source = Mesh->GetMaterial(I);
-        UTexture* Texture = nullptr; FLinearColor Tint = FLinearColor::White;
+        FHonkaiSurfaceInput Input;
+        UTexture* Texture = nullptr;
+        UTexture* ToonTexture = nullptr;
+        UTexture* SphereTexture = nullptr;
+        float EdgeEnabled = 0.f, EdgeSize = 0.f;
         if (Source)
         {
             if (!Source->GetTextureParameterValue(TEXT("mtoon_tex_MainTex"), Texture)) Source->GetTextureParameterValue(TEXT("gltf_tex_diffuse"), Texture);
-            if (!Source->GetVectorParameterValue(TEXT("mtoon_Color"), Tint)) Source->GetVectorParameterValue(TEXT("gltf_basecolor"), Tint);
-        }
-        bool Transparent = Source && IsTranslucentBlendMode(Source->GetBlendMode());
-        const bool TwoSided = Source && Source->IsTwoSided();
-        UMaterialInterface* Parent = Transparent
-            ? (TwoSided ? TranslucentTwoSidedMaterial : TranslucentMaterial)
-            : (TwoSided ? ToonTwoSidedMaterial : ToonMaterial);
-        auto* Mat = UMaterialInstanceDynamic::Create(Parent, Mesh);
-        float ToonEnabled = 1.f;
-        if (Source) Source->GetScalarParameterValue(TEXT("mmd_ToonEnabled"), ToonEnabled);
-        Mat->SetScalarParameterValue(TEXT("ToonStrength"), bBaseColorOnly ? 0.f : ToonEnabled);
-        Mat->SetScalarParameterValue(TEXT("SphereStrength"), bBaseColorOnly ? 0.f : 1.f);
-        Mat->SetVectorParameterValue(TEXT("Tint"), Tint); Mat->SetScalarParameterValue(TEXT("Opacity"), Tint.A);
-        Mat->SetVectorParameterValue(TEXT("LightDirection"), FLinearColor(KeyDirection));
-        UTexture* ToonTexture = nullptr;
-        if (Source && Source->GetTextureParameterValue(TEXT("mmd_ToonTexture"), ToonTexture))
-        {
-            if (const uint8* Row = RampRows.Find(ToonTexture))
-            {
-                Mat->SetScalarParameterValue(TEXT("RampRow"), *Row / 255.f);
-                Mat->SetTextureParameterValue(TEXT("ToonRamp"), ToonTexture);
-                Mat->SetScalarParameterValue(TEXT("ToonRampEnabled"), 1.f);
-            }
-        }
-        if (auto* const* Face = FaceMaps.Find(I))
-        {
-            Mat->SetTextureParameterValue(TEXT("FaceMap"), *Face);
-            Mat->SetScalarParameterValue(TEXT("FaceEnabled"), bBaseColorOnly ? 0.f : 1.f);
-        }
-        UTexture* SphereTexture = nullptr;
-        float SphereMode = 0;
-        if (Source && Source->GetTextureParameterValue(TEXT("mmd_SphereTexture"), SphereTexture) && SphereTexture)
-        {
-            Source->GetScalarParameterValue(TEXT("mmd_SphereMode"), SphereMode);
-            Mat->SetTextureParameterValue(TEXT("SphereTexture"), SphereTexture);
-            Mat->SetScalarParameterValue(TEXT("SphereMode"), SphereMode);
-        }
-        const FString SlotName = PendingAsset->SkeletalMesh->GetMaterials()[I].MaterialSlotName.ToString();
-        if (Texture) Mat->SetTextureParameterValue(TEXT("BaseTexture"), Texture); else ++Missing;
-        float EdgeEnabled = 0.f, EdgeSize = 0.f;
-        FLinearColor EdgeColor = FLinearColor::Black;
-        if (Source)
-        {
+            if (!Source->GetVectorParameterValue(TEXT("mtoon_Color"), Input.Tint)) Source->GetVectorParameterValue(TEXT("gltf_basecolor"), Input.Tint);
+            Source->GetScalarParameterValue(TEXT("mmd_ToonEnabled"), Input.ToonStrength);
+            Source->GetTextureParameterValue(TEXT("mmd_ToonTexture"), ToonTexture);
+            Source->GetTextureParameterValue(TEXT("mmd_SphereTexture"), SphereTexture);
+            Source->GetScalarParameterValue(TEXT("mmd_SphereMode"), Input.SphereMode);
             Source->GetScalarParameterValue(TEXT("mmd_EdgeEnabled"), EdgeEnabled);
             Source->GetScalarParameterValue(TEXT("mmd_EdgeSize"), EdgeSize);
-            Source->GetVectorParameterValue(TEXT("mmd_EdgeColor"), EdgeColor);
+            Source->GetVectorParameterValue(TEXT("mmd_EdgeColor"), Input.OutlineColor);
         }
-        UE_LOG(LogTemp, Display, TEXT("MMD_MATERIAL slot=%s texture=%s tint=%s translucent=%d two_sided=%d edge=%.0f edge_size=%.3f sphere=%.0f toon=%.0f"), *SlotName, *GetNameSafe(Texture), *Tint.ToString(), Transparent, TwoSided, EdgeEnabled, EdgeSize, SphereMode, ToonEnabled);
-        Mesh->SetMaterial(I, Mat);
-        SurfaceMaterials.Add(Mat); SurfaceTints.Add(Tint); MaterialNames.Add(SlotName);
-        auto* Ink = UMaterialInstanceDynamic::Create(FaceMaps.Contains(I) ? FaceOutlineMaterial : OutlineMaterial, Outline);
-        Ink->SetVectorParameterValue(TEXT("SurfaceTint"), Tint);
-        Ink->SetVectorParameterValue(TEXT("Tint"), EdgeColor);
-        Ink->SetScalarParameterValue(TEXT("OutlineRegion"), OutlineRegion(SlotName));
-        Ink->SetScalarParameterValue(TEXT("Opacity"), Transparent || EdgeEnabled < 0.5f ? 0.f : Tint.A * EdgeColor.A);
-        Ink->SetScalarParameterValue(TEXT("OutlineWidth"), EdgeSize * (FaceMaps.Contains(I) ? 0.12f : 0.16f));
-        if (auto* const* Face = FaceMaps.Find(I))
-        {
-            Ink->SetTextureParameterValue(TEXT("FaceMap"), *Face);
-        }
-        if (Texture) Ink->SetTextureParameterValue(TEXT("BaseTexture"), Texture);
-        Outline->SetMaterial(I, Ink);
-        OriginalOutlines.Add(Ink);
+        Input.BaseTexture = Texture; Input.ToonRamp = Cast<UTexture2D>(ToonTexture); Input.SphereTexture = SphereTexture;
+        Input.bTranslucent = Source && IsTranslucentBlendMode(Source->GetBlendMode());
+        Input.bTwoSided = Source && Source->IsTwoSided();
+        Input.OutlineOpacity = Input.bTranslucent || EdgeEnabled < .5f ? 0.f : Input.Tint.A * Input.OutlineColor.A;
+        Input.OutlineWidth = EdgeSize * .16f;
+        const FString SlotName = PendingAsset->SkeletalMesh->GetMaterials()[I].MaterialSlotName.ToString();
+        Input.OutlineRegion = static_cast<EHonkaiOutlineRegion>(uint8(OutlineRegion(SlotName)));
+        SurfaceInputs.Add(Input); NewSurfaceTints.Add(Input.Tint); NewMaterialNames.Add(SlotName);
+        Missing += Texture == nullptr;
+        UE_LOG(LogTemp, Display, TEXT("MMD_MATERIAL slot=%s texture=%s tint=%s translucent=%d two_sided=%d edge=%.0f edge_size=%.3f sphere=%.0f toon=%.0f"),
+            *SlotName, *GetNameSafe(Texture), *Input.Tint.ToString(), Input.bTranslucent, Input.bTwoSided, EdgeEnabled, EdgeSize, Input.SphereMode, Input.ToonStrength);
     }
+    FHonkaiRenderOptions RenderOptions;
+    RenderOptions.bBaseColorOnly = FParse::Param(FCommandLine::Get(), TEXT("MmdBaseColor"));
+    RenderOptions.bApplyViewPreset = true;
+    FString RenderError;
+    if (!Renderer || !Renderer->Bind({Mesh, Outline, ViewerCamera->GetCameraComponent()}, SurfaceInputs, NewOriginalFaceMaps, RenderOptions, RenderError))
+    {
+        NewActor->Destroy(); PendingAsset = nullptr;
+        Status = TEXT("卡通渲染绑定失败：") + RenderError;
+        Widget->OpenPage("Status"); return;
+    }
+    Renderer->SetLighting(KeyDirection, KeyDirection);
+    SurfaceTints = MoveTemp(NewSurfaceTints); MaterialNames = MoveTemp(NewMaterialNames);
+    OriginalFaceMaps = MoveTemp(NewOriginalFaceMaps); EnhancedFaceMaps.Reset();
     // The plugin owns geometry, skinning and texture decoding; this layer only sets the display material.
     if (ModelActor) ModelActor->Destroy(); ModelActor = NewActor; LoadedAsset = PendingAsset; PendingAsset = nullptr;
     ModelMesh = Mesh; OutlineMesh = Outline;
@@ -1671,7 +1609,7 @@ void AMmdViewerController::OnModelLoaded()
     if (!ModelState.ProfileDirectory.IsEmpty())
     {
         const bool RestoreEnhanced = ModelState.bEnhanced;
-        if (ApplyGeneratedProfile(ModelState.ProfileDirectory)) SetEnhanced(RestoreEnhanced);
+        ApplyGeneratedProfile(ModelState.ProfileDirectory, RestoreEnhanced, ModelState);
     }
     FBoxSphereBounds Bounds = LoadedAsset->SkeletalMesh->GetBounds();
     if (auto* Render = LoadedAsset->SkeletalMesh->GetResourceForRendering(); Render && Render->LODRenderData.Num())
@@ -1978,7 +1916,7 @@ void AMmdViewerController::UpdateFaceLight()
 
     if (!Rig) return;
     const FVector Direction = Rig->GetFaceLightDirection(KeyDirection);
-    for (auto Material : SurfaceMaterials) if (Material) Material->SetVectorParameterValue(TEXT("LightDirection"), FLinearColor(Direction));
+    if (Renderer) Renderer->SetLighting(KeyDirection, Direction);
 }
 void AMmdViewerController::MoveCharacter(FVector Direction, float DeltaSeconds)
 {
@@ -2010,16 +1948,16 @@ void AMmdViewerController::HandleGenerationStatus(const FMmdEnhancementStatus& P
     else if (Progress.State == EMmdEnhancementState::Succeeded)
     {
         EnhancementNotice = TEXT("正在检查并应用增强数据…");
-        if (ApplyGeneratedProfile(Progress.ResultDirectory))
+        FMmdModelState CandidateState = ModelState;
+        CandidateState.MaterialIndex = GenerationRequest.MaterialIndex;
+        CandidateState.ParametersJson = GenerationRequest.ParametersJson;
+        EnhancementNotice.Empty();
+        if (ApplyGeneratedProfile(Progress.ResultDirectory, true, CandidateState))
         {
-            ModelState.MaterialIndex = GenerationRequest.MaterialIndex;
-            ModelState.ParametersJson = GenerationRequest.ParametersJson;
-            EnhancementNotice.Empty();
-            SetEnhanced(true);
             if (EnhancementNotice.IsEmpty()) EnhancementNotice = Progress.bCacheHit ? TEXT("已复用有效缓存并应用增强效果。") : TEXT("增强效果已生成并应用。");
             UE_LOG(LogTemp, Display, TEXT("MMD_ENHANCEMENT_APPLIED cache_hit=%d profile=%s"), Progress.bCacheHit, *Progress.ResultDirectory);
         }
-        else EnhancementNotice = TEXT("增强数据校验失败，原有效果保持不变。");
+        else if (EnhancementNotice.IsEmpty()) EnhancementNotice = TEXT("增强数据校验失败，原有效果保持不变。");
     }
 }
 
@@ -2054,36 +1992,35 @@ void AMmdViewerController::CancelEnhancement()
     Enhancement.Cancel();
 }
 
-UMaterialInstanceDynamic* AMmdViewerController::MakeFaceOutline(int32 Index, UTexture2D* Map)
+bool AMmdViewerController::ApplyGeneratedProfile(const FString& Directory, bool bEnabled, const FMmdModelState& CandidateState)
 {
-    if (!OriginalOutlines.IsValidIndex(Index) || !OutlineMesh || !FaceOutlineMaterial) return nullptr;
-    auto* Ink = UMaterialInstanceDynamic::Create(FaceOutlineMaterial, OutlineMesh);
-    Ink->CopyParameterOverrides(OriginalOutlines[Index]);
-    float Width = 0;
-    OriginalOutlines[Index]->GetScalarParameterValue(TEXT("OutlineWidth"), Width);
-    if (!OriginalFaceMaps.Contains(Index)) Width *= 0.12f / 0.16f;
-    Ink->SetScalarParameterValue(TEXT("OutlineWidth"), Width);
-    Ink->SetTextureParameterValue(TEXT("FaceMap"), Map);
-    return Ink;
-}
-
-bool AMmdViewerController::ApplyGeneratedProfile(const FString& Directory)
-{
-    if (!LoadedAsset || !OutlineMesh) return false;
+    if (!LoadedAsset || !Renderer || !Renderer->IsBound()) return false;
     const auto Maps = LoadFaceMaps(LoadedModelPath, LoadedAsset, Directory / TEXT("profile.json"));
     if (Maps.IsEmpty()) return false;
-    TArray<TObjectPtr<UMaterialInstanceDynamic>> NewOutlines = OriginalOutlines;
+    FHonkaiFaceMaps NewMaps;
     for (const auto& Entry : Maps)
     {
-        if (!SurfaceMaterials.IsValidIndex(Entry.Key)) return false;
-        auto* Ink = MakeFaceOutline(Entry.Key, Entry.Value);
-        if (!Ink) return false;
-        NewOutlines[Entry.Key] = Ink;
+        if (!SurfaceTints.IsValidIndex(Entry.Key)) return false;
+        NewMaps.Add(Entry.Key, Entry.Value);
     }
-    EnhancedFaceMaps.Reset();
-    for (const auto& Entry : Maps) EnhancedFaceMaps.Add(Entry.Key, Entry.Value);
-    EnhancedOutlines = MoveTemp(NewOutlines);
-    ModelState.ProfileDirectory = Directory;
+    FMmdModelState NextState = CandidateState;
+    NextState.ProfileDirectory = Directory;
+    return CommitGeneratedProfile(NewMaps, NextState, bEnabled);
+}
+
+bool AMmdViewerController::CommitGeneratedProfile(const TMap<int32, TObjectPtr<UTexture2D>>& Maps,
+    const FMmdModelState& CandidateState, bool bEnabled)
+{
+    if (Maps.IsEmpty() || !Renderer || !Renderer->IsBound()) return false;
+    FString Error;
+    if (!Renderer->PrepareFaceMaps(Maps, Error) || !Renderer->SetFaceMaps(bEnabled ? Maps : OriginalFaceMaps, Error))
+    { EnhancementNotice = Error; return false; }
+    ClearMaterialPreview();
+    EnhancedFaceMaps = Maps;
+    ModelState = CandidateState;
+    bEnhanced = bEnabled;
+    ModelState.bEnhanced = bEnabled;
+    SaveEffectChoice();
     return true;
 }
 
@@ -2091,18 +2028,10 @@ void AMmdViewerController::SetEnhanced(bool bEnabled)
 {
     ClearMaterialPreview();
     if (bEnabled && EnhancedFaceMaps.IsEmpty()) { EnhancementNotice = TEXT("尚无增强数据，请先生成增强效果。"); return; }
+    FString Error;
+    if (!Renderer || !Renderer->SetFaceMaps(bEnabled ? EnhancedFaceMaps : OriginalFaceMaps, Error))
+    { EnhancementNotice = Error.IsEmpty() ? TEXT("卡通渲染尚未就绪。") : Error; return; }
     bEnhanced = bEnabled;
-    const auto& Maps = bEnhanced ? EnhancedFaceMaps : OriginalFaceMaps;
-    const auto& Outlines = bEnhanced ? EnhancedOutlines : OriginalOutlines;
-    const bool BaseOnly = FParse::Param(FCommandLine::Get(), TEXT("MmdBaseColor"));
-    for (int32 I = 0; I < SurfaceMaterials.Num(); ++I)
-    {
-        if (!SurfaceMaterials[I]) continue;
-        const auto* Map = Maps.Find(I);
-        SurfaceMaterials[I]->SetScalarParameterValue(TEXT("FaceEnabled"), Map && !BaseOnly ? 1.f : 0.f);
-        if (Map) SurfaceMaterials[I]->SetTextureParameterValue(TEXT("FaceMap"), Map->Get());
-        if (OutlineMesh && Outlines.IsValidIndex(I)) OutlineMesh->SetMaterial(I, Outlines[I]);
-    }
     SaveEffectChoice();
 }
 
@@ -2117,17 +2046,14 @@ void AMmdViewerController::SaveEffectChoice()
 
 void AMmdViewerController::PreviewMaterial(int32 Index)
 {
-    if (Enhancement.IsRunning() || !SurfaceMaterials.IsValidIndex(Index)) return;
+    if (Enhancement.IsRunning() || !Renderer || !Renderer->IsBound() || !SurfaceTints.IsValidIndex(Index)) return;
     ClearMaterialPreview();
-    PreviewMaterialIndex = Index;
-    const FLinearColor Tint(.16f, .85f, .58f, SurfaceTints[Index].A);
-    SurfaceMaterials[Index]->SetVectorParameterValue(TEXT("Tint"), Tint);
+    if (Renderer->SetTint(Index, FLinearColor(.16f, .85f, .58f, SurfaceTints[Index].A))) PreviewMaterialIndex = Index;
 }
 
 void AMmdViewerController::ClearMaterialPreview()
 {
-    if (SurfaceMaterials.IsValidIndex(PreviewMaterialIndex) && SurfaceTints.IsValidIndex(PreviewMaterialIndex))
-        SurfaceMaterials[PreviewMaterialIndex]->SetVectorParameterValue(TEXT("Tint"), SurfaceTints[PreviewMaterialIndex]);
+    if (Renderer && SurfaceTints.IsValidIndex(PreviewMaterialIndex)) Renderer->SetTint(PreviewMaterialIndex, SurfaceTints[PreviewMaterialIndex]);
     PreviewMaterialIndex = INDEX_NONE;
 }
 
@@ -2155,7 +2081,7 @@ void AMmdViewerController::ClearEnhancementCache()
     FString Error;
     if (!FMmdEnhancement::ClearCache(Error)) { EnhancementNotice = Error; return; }
     SetEnhanced(false);
-    EnhancedFaceMaps.Reset(); EnhancedOutlines.Reset(); ModelState.ProfileDirectory.Empty();
+    EnhancedFaceMaps.Reset(); ModelState.ProfileDirectory.Empty();
     EnhancementNotice.Empty();
     SaveEffectChoice();
     if (EnhancementNotice.IsEmpty()) EnhancementNotice = TEXT("生成缓存已清理。导入的完整资源和原始文件均已保留。");

@@ -14,6 +14,7 @@
 
 class UVrmAssetListObject;
 class UMaterialInterface;
+class UHonkaiRenderInstance;
 class UMaterialInstanceDynamic;
 class SMmdViewer;
 class USkeletalMeshComponent;
@@ -100,8 +101,8 @@ private:
     void UpdateCamera();
     void SaveEffectChoice();
     void HandleGenerationStatus(const FMmdEnhancementStatus& Progress);
-    bool ApplyGeneratedProfile(const FString& Directory);
-    UMaterialInstanceDynamic* MakeFaceOutline(int32 Index, UTexture2D* Map);
+    bool ApplyGeneratedProfile(const FString& Directory, bool bEnabled, const FMmdModelState& CandidateState);
+    bool CommitGeneratedProfile(const TMap<int32, TObjectPtr<UTexture2D>>& Maps, const FMmdModelState& CandidateState, bool bEnabled);
     FMmdEnhancement Enhancement;
     bool SavePartVisibility();
     FMmdPartVisibility PartVisibility;
@@ -117,9 +118,7 @@ private:
     int32 PreviewMaterialIndex = INDEX_NONE;
     UPROPERTY() TObjectPtr<USkeletalMeshComponent> ModelMesh;
     UPROPERTY() TObjectPtr<USkinnedMeshComponent> OutlineMesh;
-    UPROPERTY() TArray<TObjectPtr<UMaterialInstanceDynamic>> SurfaceMaterials;
-    UPROPERTY() TArray<TObjectPtr<UMaterialInstanceDynamic>> OriginalOutlines;
-    UPROPERTY() TArray<TObjectPtr<UMaterialInstanceDynamic>> EnhancedOutlines;
+    UPROPERTY() TObjectPtr<UHonkaiRenderInstance> Renderer;
     UPROPERTY() TMap<int32, TObjectPtr<UTexture2D>> OriginalFaceMaps;
     UPROPERTY() TMap<int32, TObjectPtr<UTexture2D>> EnhancedFaceMaps;
     TArray<FLinearColor> SurfaceTints;
@@ -133,13 +132,6 @@ private:
 	UPROPERTY() TObjectPtr<UVrmAssetListObject> ImportTemplate;
 	UPROPERTY() TObjectPtr<AActor> ModelActor;
 	UPROPERTY() TObjectPtr<ACameraActor> ViewerCamera;
-	UPROPERTY() TObjectPtr<UMaterialInterface> ToonMaterial;
-	UPROPERTY() TObjectPtr<UMaterialInstanceDynamic> CelPass;
-	UPROPERTY() TObjectPtr<UMaterialInterface> ToonTwoSidedMaterial;
-	UPROPERTY() TObjectPtr<UMaterialInterface> OutlineMaterial;
-	UPROPERTY() TObjectPtr<UMaterialInterface> FaceOutlineMaterial;
-	UPROPERTY() TObjectPtr<UMaterialInterface> TranslucentMaterial;
-	UPROPERTY() TObjectPtr<UMaterialInterface> TranslucentTwoSidedMaterial;
 	FVector Target = FVector(0, 0, 80), ModelCenter = FVector(0, 0, 80);
     FVector MovementVelocity = FVector::ZeroVector;
 	FVector KeyDirection = FVector::ForwardVector;

@@ -16,3 +16,6 @@
 [submodule "Plugins/HonkaiMotionCapture"]
 	path = Plugins/HonkaiMotionCapture
 	url = https://github.com/furinasdog/HonkaiMotionCapture.git
+[submodule "Plugins/HonkaiToonRenderer"]
+	path = Plugins/HonkaiToonRenderer
+	url = https://github.com/furinasdog/HonkaiToonRenderer.git

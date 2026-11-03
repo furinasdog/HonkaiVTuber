@@ -46,3 +46,5 @@ __pycache__/
 !/Plugins/VRM4U/
 !/Plugins/Spout2_DX12/
 !/Plugins/HonkaiMotionCapture/
+
+!/Plugins/HonkaiToonRenderer/

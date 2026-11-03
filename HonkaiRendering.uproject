@@ -21,8 +21,14 @@
 		}
 	],
 	"Plugins": [
-		{"Name": "HonkaiMotionCapture", "Enabled": true},
-		{"Name": "Spout2_DX12", "Enabled": true},
+		{
+			"Name": "HonkaiMotionCapture",
+			"Enabled": true
+		},
+		{
+			"Name": "Spout2_DX12",
+			"Enabled": true
+		},
 		{
 			"Name": "AndroidFileServer",
 			"Enabled": false
@@ -60,6 +66,10 @@
 		},
 		{
 			"Name": "Terminal",
+			"Enabled": true
+		},
+		{
+			"Name": "HonkaiToonRenderer",
 			"Enabled": true
 		}
 	]

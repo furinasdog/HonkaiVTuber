@@ -34,7 +34,7 @@ cd HonkaiRendering
 
 生成 `HonkaiRendering.uproject` 的工程文件并编译 `HonkaiRenderingEditor`，打开 `/Game/MmdViewer/L_Viewer`。VRM4U 以 submodule 固定到本项目 fork 的已提交版本；更新源码后使用 `git submodule update --init --recursive`。
 
-`Content/MmdViewer` 包含本项目的关卡与材质。修改 `Scripts/HonkaiToon.hlsl` 后，在 UE Python 环境运行 `Scripts/setup_viewer.py` 更新材质；无界面命令模式必须加 `-AllowCommandletRendering` 才会编译 GPU 材质。
+`Content/MmdViewer` 保留应用关卡和背景。共享材质、HLSL 和运行时渲染由 [HonkaiToonRenderer](https://github.com/furinasdog/HonkaiToonRenderer) 子模块维护；其接口直接接受 UE 网格、相机和贴图，不依赖 PMX 或动捕。修改插件着色器后运行 `Plugins/HonkaiToonRenderer/Scripts/build_materials.py`；应用场景初始化仍使用 `Scripts/setup_viewer.py`。无界面模式加 `-AllowCommandletRendering`。
 
 ## 渲染范围
 
