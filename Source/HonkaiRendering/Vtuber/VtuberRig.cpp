@@ -684,6 +684,28 @@ namespace
     };
 }
 
+FQuat FVtuberBodyFrameMedian::Apply(const FQuat& Rotation, double TimestampSeconds, float LostTrackingSeconds)
+{
+    // Animation may tick several times per captured frame. Reuse the filtered
+    // result, so a second tick cannot pass the raw spike through the same slot.
+    if (TimestampSeconds <= Timestamp) return Output;
+    if (Timestamp > 0 && TimestampSeconds - Timestamp > LostTrackingSeconds) Reset();
+    Timestamp = TimestampSeconds;
+    Output = Rotation.GetNormalized();
+    Samples[Next] = Output;
+    Next = (Next + 1) % 3;
+    Count = FMath::Min(Count + 1, 3);
+    if (Count < 3) return Output;
+    double BestCost = TNumericLimits<double>::Max();
+    for (int32 I = 0; I < 3; ++I)
+    {
+        double Cost = 0;
+        for (int32 J = 0; J < 3; ++J) Cost += Samples[I].AngularDistance(Samples[J]);
+        if (Cost < BestCost) { BestCost = Cost; Output = Samples[I]; }
+    }
+    return Output;
+}
+
 bool FVtuberThresholdCurve::IsValid() const
 {
     return FiniteRange(Start, 0, 1) && FiniteRange(Full, 0, 1) && Full > Start;
@@ -895,6 +917,7 @@ bool UVtuberRigComponent::CalibrateNeutral()
     if (bFace) { NeutralHead = Latest.HeadRotation; NeutralExpressions = Latest.BlendShapes; }
     if (bBody) NeutralBodyFrame = Body;
     SteadyBodyTargets.Reset();
+    BodyFrameMedian.Reset();
     // Do not zero the smoothed output: an existing pose returns continuously to the new neutral.
     return true;
 }
@@ -905,12 +928,13 @@ void UVtuberRigComponent::ResetNeutral()
     NeutralBodyFrame = FQuat::Identity;
     NeutralExpressions.Reset();
     SteadyBodyTargets.Reset();
+    BodyFrameMedian.Reset();
 }
 
 bool UVtuberRigComponent::SetSettings(const FVtuberRigSettings& Value)
 {
     if (!ValidSettings(Value)) return false;
-    if (Value.bBodyEnabled != Settings.bBodyEnabled) SteadyBodyTargets.Reset();
+    if (Value.bBodyEnabled != Settings.bBodyEnabled) { SteadyBodyTargets.Reset(); BodyFrameMedian.Reset(); }
     if (Value.SmoothingSeconds != Settings.SmoothingSeconds)
         for (auto& Response : ChannelResponses) Response.Value.SmoothingSeconds = FMath::Clamp(Value.SmoothingSeconds, 0.f, .5f);
     Settings = Value;
@@ -1069,6 +1093,7 @@ bool UVtuberRigComponent::SetBodyBone(FName Channel, FName Bone)
     if (Bone.IsNone()) BodyBones.Remove(Channel);
     else BodyBones.Add(Channel, Bone);
     SteadyBodyTargets.Reset();
+    BodyFrameMedian.Reset();
     BuildIdleArmPose();
     return true;
 }
@@ -1082,7 +1107,9 @@ bool UVtuberRigComponent::IsBodyChannelTracked(FName Channel) const
 float UVtuberRigComponent::GetBodyChannelOutputDegrees(FName Channel) const
 {
     if (const FQuat* Rotation = SmoothedBody.Find(Channel))
-        return FMath::Clamp(FMath::RadiansToDegrees(Rotation->GetAngle()), 0.f, 180.f);
+        // Slerp can choose either sign of a quaternion; both describe the same
+        // rotation and must report the same shortest angular displacement.
+        return FMath::Clamp(FMath::RadiansToDegrees(Rotation->AngularDistance(FQuat::Identity)), 0.f, 180.f);
     return 0.f;
 }
 
@@ -1202,6 +1229,7 @@ void UVtuberRigComponent::UpdateTracking(float DeltaTime)
     const bool BodyValid = PoseTracking && ReadBodyFrame(Latest, BodyFrame);
     if (BodyValid)
     {
+        BodyFrame = BodyFrameMedian.Apply(BodyFrame, Latest.TimestampSeconds, Settings.LostTrackingSeconds);
         const FQuat CanonicalDelta = BoundedTorso((BodyFrame * NeutralBodyFrame.Inverse()).GetNormalized());
         BodyDelta = (CanonicalToComponent * CanonicalDelta * CanonicalToComponent.Inverse()).GetNormalized();
         DeltaTarget(TEXT("spine"), FQuat::Slerp(FQuat::Identity, BodyDelta, BoneIndex(TEXT("chest")) == INDEX_NONE ? 1.f : .35f));
@@ -1211,6 +1239,7 @@ void UVtuberRigComponent::UpdateTracking(float DeltaTime)
         DeltaTarget(TEXT("shoulder_l"), BodyDelta);
         DeltaTarget(TEXT("shoulder_r"), BodyDelta);
     }
+    else BodyFrameMedian.Reset();
     for (int32 Side = 0; Side < 2; ++Side)
     {
         const TCHAR* UpperKey = Side == 0 ? TEXT("upperarm_l") : TEXT("upperarm_r");
@@ -1651,6 +1680,7 @@ bool UVtuberRigComponent::LoadProfile(const FString& Path, FString& Error)
     NeutralHead = NewNeutral; NeutralExpressions = MoveTemp(NewExpressions);
     NeutralBodyFrame = NewBodyNeutral; ChannelResponses = MoveTemp(NewResponses);
     ResponseFiltered.Reset(); SteadyBodyTargets.Reset();
+    BodyFrameMedian.Reset();
     ProfilePath = Path;
     RefreshHeadReference();
     BuildIdleArmPose();
@@ -1662,6 +1692,44 @@ bool UVtuberRigComponent::LoadProfile(const FString& Path, FString& Error)
 #include "Animation/Skeleton.h"
 #include "Misc/MemStack.h"
 #include <limits>
+
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberBodyFrameMedianTest, "HonkaiVTuber.Rig.BodyFrameMedian", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FVtuberBodyFrameMedianTest::RunTest(const FString& Parameters)
+{
+    FVtuberBodyFrameMedian Filter;
+    double Time = 1;
+    auto Yaw = [](double Degrees) { return FRotator(0, Degrees, 0).Quaternion(); };
+    auto Push = [&](double Degrees) { Time += .04; return Filter.Apply(Yaw(Degrees), Time, .3f); };
+    auto Near = [](const FQuat& A, const FQuat& B) { return A.AngularDistance(B) < 1.e-6; };
+    TestTrue(TEXT("The first body sample is immediate"), Near(Push(0), Yaw(0)));
+    TestTrue(TEXT("The second body sample is immediate"), Near(Push(0), Yaw(0)));
+    TestTrue(TEXT("An isolated three-degree body spike is rejected"), Near(Push(3), Yaw(0)));
+    TestTrue(TEXT("Repeated animation ticks reuse the rejected spike's filtered result"),
+        Near(Filter.Apply(Yaw(3), Time, .3f), Yaw(0)) && Near(Filter.Apply(Yaw(30), Time, .3f), Yaw(0)));
+    TestTrue(TEXT("The sample following a spike remains at the stationary target"), Near(Push(0), Yaw(0)));
+    Filter.Reset();
+    TestTrue(TEXT("A new segment begins without delay"), Near(Push(0), Yaw(0)));
+    TestTrue(TEXT("Warmup preserves a second moving sample"), Near(Push(3), Yaw(3)));
+    TestTrue(TEXT("A sustained turn follows with one capture-sample delay"), Near(Push(6), Yaw(3)));
+    TestTrue(TEXT("The sustained turn continues following"), Near(Push(9), Yaw(6)));
+    Filter.Reset();
+    Push(179); Push(-179);
+    TestTrue(TEXT("Body medoid crosses the signed 180-degree boundary"), Near(Push(178), Yaw(179)));
+    Filter.Reset();
+    const FQuat Orientation = Yaw(35);
+    Filter.Apply(Orientation, Time += .04, .3f);
+    Filter.Apply(Orientation * -1., Time += .04, .3f);
+    TestTrue(TEXT("Quaternion sign does not change the body medoid"),
+        Near(Filter.Apply(Yaw(38), Time += .04, .3f), Orientation));
+    Filter.Reset();
+    Push(0); Push(0); Push(0);
+    TestTrue(TEXT("A capture gap discards the previous segment"),
+        Near(Filter.Apply(Yaw(12), Time += .5, .3f), Yaw(12)));
+    Filter.Reset();
+    TestTrue(TEXT("Explicit tracking-loss reset accepts the reacquired pose immediately"), Near(Push(-8), Yaw(-8)));
+    return true;
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVtuberProxyLifecycleTest, "HonkaiVTuber.Rig.ProxyLifecycle", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FVtuberProxyLifecycleTest::RunTest(const FString& Parameters)
@@ -1966,6 +2034,17 @@ bool FVtuberRuntimeRigTest::RunTest(const FString& Parameters)
     Mesh->SetSkeletalMesh(Asset);
     auto* Rig = NewObject<UVtuberRigComponent>();
     if (!TestTrue(TEXT("Initialize unregistered CPU rig"), Rig->Initialize(Mesh))) return false;
+    for (double Degrees : {0., 35., 110.})
+    {
+        const FQuat Rotation(FVector::ForwardVector, FMath::DegreesToRadians(Degrees));
+        for (double Sign : {1., -1.})
+        {
+            Rig->SmoothedBody.Add(TEXT("thumb1_l"), Rotation * Sign);
+            TestTrue(FString::Printf(TEXT("Body angle query is sign invariant at %.0f degrees (sign %.0f)"), Degrees, Sign),
+                FMath::IsNearlyEqual(Rig->GetBodyChannelOutputDegrees(TEXT("thumb1_l")), float(Degrees), .001f));
+        }
+    }
+    Rig->SmoothedBody.Remove(TEXT("thumb1_l"));
     TestTrue(TEXT("Hand channel accepts a model bone"), Rig->SetBodyBone(TEXT("thumb1_l"), TEXT("head")));
     TestFalse(TEXT("Unknown body channel rejected"), Rig->SetBodyBone(TEXT("unknown_joint"), TEXT("head")));
     TestFalse(TEXT("Unknown target bone rejected"), Rig->SetBodyBone(TEXT("thumb1_l"), TEXT("absent")));
@@ -2432,6 +2511,22 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     };
     const int32 ChestIndex = Indices.FindChecked(TEXT("上半身2"));
     const FQuat StillChest = ComponentPose(Evaluate())[ChestIndex].GetRotation();
+    for (int32 I = 0; I < 3; ++I) Submit(Neutral);
+    FVtuberTrackingSnapshot Spike = RotateTorso(Neutral, 3.f);
+    Spike.HeadRotation = FRotator(0, 20, 0).Quaternion();
+    Submit(Spike);
+    for (int32 I = 0; I < 3; ++I) Rig->UpdateTracking(1.f / 60.f);
+    TestTrue(TEXT("An isolated torso spike stays rejected across repeated animation ticks"),
+        ComponentPose(Evaluate())[ChestIndex].GetRotation().AngularDistance(StillChest) < 1.e-6);
+    TestTrue(TEXT("Head rotation remains immediate while a torso spike is rejected"),
+        Instance->BodyComponentRotations.FindChecked(TEXT("頭")).Equals(
+            Spike.HeadRotation * GlobalRest[Indices.FindChecked(TEXT("頭"))].GetRotation(), .0001f));
+    FVtuberTrackingSnapshot NoBody = Neutral; NoBody.bPoseTracked = false;
+    Submit(NoBody);
+    Submit(Spike);
+    TestTrue(TEXT("Reacquired torso data starts a new median segment"),
+        FMath::RadiansToDegrees(ComponentPose(Evaluate())[ChestIndex].GetRotation().AngularDistance(StillChest)) > .1f);
+    for (int32 I = 0; I < 90; ++I) Submit(Neutral);
     float PeakChestNoise = 0.f;
     for (int32 I = 0; I < 40; ++I)
     {
@@ -2454,10 +2549,10 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     const FQuat TorsoLean = FRotator(0, 0, 12).Quaternion();
     Lean.HeadRotation = FRotator(0, 20, 0).Quaternion();
     Submit(Lean);
-    for (int32 I = 0; I < 15; ++I) Rig->UpdateTracking(1.f / 60.f);
+    for (int32 I = 0; I < 15; ++I) Submit(Lean);
     const float StepAngle = FMath::RadiansToDegrees(ComponentPose(Evaluate())[ChestIndex].GetRotation().AngularDistance(StillChest));
     TestTrue(TEXT("Fast torso step moves within a quarter second"), StepAngle > 8.f && StepAngle <= 12.1f);
-    for (int32 I = 0; I < 90; ++I) Rig->UpdateTracking(1.f / 60.f);
+    for (int32 I = 0; I < 90; ++I) Submit(Lean);
     const FQuat ExpectedHead = Lean.HeadRotation * GlobalRest[Indices.FindChecked(TEXT("頭"))].GetRotation();
     TestTrue(TEXT("Head component target does not inherit torso/neck twice"), Instance->BodyComponentRotations.FindChecked(TEXT("頭")).Equals(ExpectedHead, .0001f));
     const FQuat ExpectedUpper = TorsoLean * GlobalRest[Indices.FindChecked(TEXT("左腕"))].GetRotation();
@@ -2494,7 +2589,7 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     const FVector Shoulder = RestPosition(TEXT("左腕"));
     SetPose(Bent, 13, Shoulder + Upper * .24); SetPose(Bent, 15, Shoulder + Upper * .24 + Lower * .22);
     Submit(Bent);
-    for (int32 I = 0; I < 90; ++I) Rig->UpdateTracking(1.f / 60.f);
+    for (int32 I = 0; I < 90; ++I) Submit(Bent);
     for (const auto& Pair : TArray<TPair<FName, FName>>{{TEXT("upperarm_l"), TEXT("lowerarm_l")}, {TEXT("lowerarm_l"), TEXT("hand_l")}})
     {
         const int32 A = Indices.FindChecked(Rig->GetBodyBone(Pair.Key)), B = Indices.FindChecked(Rig->GetBodyBone(Pair.Value));
@@ -2592,14 +2687,27 @@ bool FVtuberAnatomicalRetargetTest::RunTest(const FString& Parameters)
     const FQuat PalmRoll(PalmAxis, FMath::DegreesToRadians(25.f));
     for (auto& Point : Hand.WorldLandmarks)
         Point.Position = MP(PalmRoll.RotateVector(TrackingToCanonical(Point.Position) - PalmOrigin));
-    Hands.Hands.Add(Hand); Submit(Hands);
+    Hands.Hands.Add(Hand);
+    FVtuberTrackingSnapshot HandSpike = RotateTorso(Neutral, 3.f);
+    HandSpike.Hands = Hands.Hands;
+    for (int32 I = 0; I < 3; ++I) Submit(Neutral);
+    Submit(HandSpike);
+    TestTrue(TEXT("Finger tracking is immediate while the torso median rejects a spike"), Rig->IsBodyChannelTracked(TEXT("thumb1_l")));
+    TestTrue(TEXT("Palm rotation has no additional torso-median delay"),
+        Instance->BodyComponentRotations.FindChecked(TEXT("左手首")).Equals(PalmRoll * GlobalRest[Indices.FindChecked(TEXT("左手首"))].GetRotation(), .0001f));
+    Submit(Hands);
     TestTrue(TEXT("Hand-only packet tracks a complete palm"), Rig->IsBodyChannelTracked(TEXT("thumb1_l")));
     TestTrue(TEXT("Wrist follows full palm roll without a pose or face"), Instance->BodyComponentRotations.FindChecked(TEXT("左手首")).Equals(PalmRoll * GlobalRest[Indices.FindChecked(TEXT("左手首"))].GetRotation(), .0001f));
     TestTrue(TEXT("Palm roll carries finger axial rotation"), Instance->BodyComponentRotations.FindChecked(TEXT("左人指１")).Equals(PalmRoll * GlobalRest[Indices.FindChecked(TEXT("左人指１"))].GetRotation(), .0001f));
     for (const auto& Pair : Instance->BodyComponentRotations)
         TestTrue(TEXT("All hand-only output rotations are finite and normalized"), !Pair.Value.ContainsNaN() && Pair.Value.IsNormalized());
     for (FName Channel : Rig->GetBodyTrackingChannels(true))
-        TestTrue(TEXT("Finger rotation remains within safety limit"), Rig->GetBodyChannelOutputDegrees(Channel) <= 110.01f);
+    {
+        const float Degrees = Rig->GetBodyChannelOutputDegrees(Channel);
+        const FQuat* Rotation = Rig->SmoothedBody.Find(Channel);
+        TestTrue(FString::Printf(TEXT("Finger rotation remains within safety limit [%s: %.4f degrees, W=%.8f]"),
+            *Channel.ToString(), Degrees, Rotation ? Rotation->W : 1.), Degrees <= 110.01f);
+    }
     Hands.Hands[0].WorldLandmarks[5] = Hands.Hands[0].WorldLandmarks[17]; Submit(Hands);
     TestFalse(TEXT("Collapsed palm cannot drive fingers"), Rig->IsBodyChannelTracked(TEXT("thumb1_l")));
 

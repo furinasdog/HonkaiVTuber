@@ -87,6 +87,18 @@ struct FVtuberRigSettings
     FVtuberThresholdCurve YawPositive, YawNegative, PitchPositive, PitchNegative, RollPositive, RollNegative;
 };
 
+// Three distinct capture samples; only torso orientation uses this filter.
+struct FVtuberBodyFrameMedian
+{
+    FQuat Apply(const FQuat& Rotation, double TimestampSeconds, float LostTrackingSeconds);
+    void Reset() { Count = Next = 0; Timestamp = 0; Output = FQuat::Identity; }
+private:
+    FQuat Samples[3];
+    FQuat Output = FQuat::Identity;
+    double Timestamp = 0;
+    int32 Count = 0, Next = 0;
+};
+
 // BODY_STEADY_GATE_BEGIN
 // Plain C++ decision seam also exercised by Saved/Tests/BodyJitterDiagnostics.
 struct FVtuberBodySteadyGate
@@ -214,6 +226,7 @@ private:
     TSet<FName> TrackedBodyChannels;
     TArray<FTransform> ReferenceComponentPose;
     FQuat NeutralBodyFrame = FQuat::Identity;
+    FVtuberBodyFrameMedian BodyFrameMedian;
     FQuat SmoothedHeadLocal = FQuat::Identity;
     FQuat NeutralHead = FQuat::Identity;
     FQuat SmoothedHead = FQuat::Identity;
