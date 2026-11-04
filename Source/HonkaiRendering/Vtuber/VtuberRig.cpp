@@ -1,6 +1,6 @@
+#include "VtuberRig.h"
 #include "Misc/Parse.h"
 #include "Misc/CommandLine.h"
-#include "VtuberRig.h"
 
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimNodeBase.h"

@@ -195,7 +195,9 @@ bool FVtuberCalibrationSession::FitRange(const TArray<float>& Neutral, const TAr
     { Error = TEXT("放松时的输入接近上限，请检查面部追踪后重新记录。"); return false; }
     FVtuberThresholdCurve Proposed;
     Proposed.Start = Low;
-    Proposed.Full = FMath::Min(1.f, FMath::Max(Low + MinimumSpan, CalQuantile(Active, .8f) + .01f));
+    // Everyday expressions need not repeat the calibration peak; keep the neutral noise gate.
+    const float ActiveCenter = CalQuantile(Active, .5f);
+    Proposed.Full = FMath::Min(1.f, FMath::Max(Low + MinimumSpan, ActiveCenter - (ActiveCenter - Low) * .1f));
     Range = Proposed;
     return true;
 }

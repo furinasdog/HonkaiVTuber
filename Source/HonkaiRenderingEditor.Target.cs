@@ -12,5 +12,6 @@ public class HonkaiRenderingEditorTarget : TargetRules
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_8;
 		ExtraModuleNames.Add("HonkaiRendering");
 		ExtraModuleNames.Add("HonkaiWindowStartup");
+		ExtraModuleNames.Add("HonkaiLoadingScreen");
 	}
 }

@@ -71,6 +71,7 @@ public:
     FString PartVisibilityNotice;
     void MoveCharacter(FVector Direction, float DeltaSeconds);
     void StopCharacterMovement() { MovementVelocity = FVector::ZeroVector; }
+    float DisplayRenderFps = 0, RenderFrameSeconds = 0;
     FNativeTracking Tracking;
     FVtuberTrackingSnapshot LastTrackingSnapshot;
     double LastTrackingFrame = 0;

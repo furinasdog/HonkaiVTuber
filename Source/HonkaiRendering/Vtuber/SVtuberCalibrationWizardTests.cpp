@@ -122,6 +122,8 @@ bool FVtuberCalibrationFitRangeTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Fitted range retains the minimum usable span"), Range.Full - Range.Start >= FSession::MinimumSpan - KINDA_SMALL_NUMBER);
     TestTrue(TEXT("Neutral remains below the response threshold"), Range.Evaluate(.102f) <= .2f);
     TestTrue(TEXT("An active expression reaches the response"), Range.Evaluate(.7f) >= .8f);
+    TestTrue(TEXT("An expression slightly below the recorded peak still reaches full response"), Range.Evaluate(.65f) >= .99f);
+    TestTrue(TEXT("Calibration keeps neutral noise below the onset"), Range.Evaluate(.11f) == 0.f);
 
     const FVtuberThresholdCurve Sentinel{.24f, .81f};
     Range = Sentinel;

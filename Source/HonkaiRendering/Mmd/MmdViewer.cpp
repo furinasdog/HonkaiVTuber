@@ -1,6 +1,8 @@
 #include "MmdViewer.h"
 #include "HonkaiRenderInstance.h"
 #include "MmdUiStyle.h"
+#include "MmdNotices.h"
+#include "Misc/App.h"
 #include "Async/Async.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
@@ -317,6 +319,95 @@ public:
     SLATE_BEGIN_ARGS(SMmdViewer) {} SLATE_END_ARGS()
     TWeakObjectPtr<AMmdViewerController> Controller;
     TSharedPtr<SBorder> MenuLayer;
+    TSharedPtr<SBox> ReviewHost;
+    TSharedPtr<SMmdNoticePanel> ReviewPanel;
+    FMmdFirstRunState FirstRun;
+    TArray<FMmdNotice> SoftwareNotices;
+    FString NoticeHash, DeferredArchive, ApprovedModel, ReviewError;
+    int32 NoticeStep = 0;
+    bool bNoticesAccepted = true, bReviewOpen = false, bGuideOpen = false, bQaSkipNotices = false;
+    FString FirstRunPath() const { return FMmdEnhancement::UserDataDir() / TEXT("Onboarding.json"); }
+    void CloseReview()
+    {
+        bReviewOpen = false; ReviewPanel.Reset();
+        if (ReviewHost) ReviewHost->SetContent(SNullWidget::NullWidget);
+    }
+    void ShowNotice(const FMmdNotice& Notice, bool bTimed, const FString& Folder, TFunction<void()> Accepted, TFunction<void()> Declined)
+    {
+        bReviewOpen = true; bDragging = false; PlacementKeys.Reset();
+        if (Controller.IsValid()) Controller->StopCharacterMovement();
+        ReviewHost->SetContent(SAssignNew(ReviewPanel, SMmdNoticePanel).Notice(Notice).RequireFiveSeconds(bTimed)
+            .Folder(Folder).Accepted(MoveTemp(Accepted)).Declined(MoveTemp(Declined)));
+        if (FSlateApplication::IsInitialized()) FSlateApplication::Get().SetKeyboardFocus(ReviewPanel);
+    }
+    void ReviewSoftware()
+    {
+        const FString Folder = FPaths::DirectoryExists(FPaths::ProjectDir() / TEXT("../Licenses"))
+            ? FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("../Licenses")) : FPaths::ProjectDir();
+        TWeakPtr<SMmdViewer> Weak = SharedThis(this);
+        ShowNotice(SoftwareNotices[NoticeStep], false, Folder, [Weak]
+        {
+            auto Self = Weak.Pin(); if (!Self) return;
+            if (Self->NoticeStep + 1 < Self->SoftwareNotices.Num()) { ++Self->NoticeStep; Self->ReviewSoftware(); return; }
+            auto Proposed = Self->FirstRun; Proposed.AcceptedHash = Self->NoticeHash;
+            FString Error;
+            if (!Proposed.Save(Self->FirstRunPath(), Error)) { Self->ReviewPanel->SetError(Error); return; }
+            Self->FirstRun = Proposed; Self->bNoticesAccepted = true;
+            if (!Proposed.bGuideSeen) Self->ShowGuide();
+            else
+            {
+                Self->CloseReview();
+                if (!Self->DeferredArchive.IsEmpty())
+                { const FString Path=MoveTemp(Self->DeferredArchive); Self->Controller->LoadArchive(Path); }
+            }
+        }, [] { FPlatformMisc::RequestExit(false); });
+    }
+    bool FinishGuide()
+    {
+        auto Proposed = FirstRun; Proposed.bGuideSeen = true;
+        FString Error;
+        if (!Proposed.Save(FirstRunPath(), Error))
+        { if (ReviewPanel) ReviewPanel->SetError(Error); else ReviewError = Error; return false; }
+        FirstRun = Proposed; bGuideOpen = false; CloseReview(); return true;
+    }
+    void ShowGuide()
+    {
+        CloseReview(); bGuideOpen = bReviewOpen = true;
+        TWeakPtr<SMmdViewer> Weak = SharedThis(this);
+        ReviewHost->SetContent(SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(Panel).Padding(28)
+            [SNew(SVerticalBox)
+            + SVerticalBox::Slot().AutoHeight().Padding(0,0,0,20)[Label(TEXT("导入你的第一个模型"),18)]
+            + SVerticalBox::Slot().AutoHeight().Padding(0,0,0,18)[Label(TEXT("将包含 PMX 与贴图的 ZIP 压缩包拖入窗口。\n保留压缩包内的相对目录结构，无需提前解压。"),13)]
+            + SVerticalBox::Slot().AutoHeight().Padding(0,0,0,18)[Label(TEXT("选择 PMX 并阅读模型使用守则后，即可查看角色。\n中键旋转，Shift + 中键平移，滚轮缩放。\nWASD 移动角色，E 上移，Q 下移。\nEsc 打开菜单，H 隐藏或恢复菜单。"),12,Muted)]
+            + SVerticalBox::Slot().FillHeight(1)[SNullWidget::NullWidget]
+            + SVerticalBox::Slot().AutoHeight()[SNew(STextBlock).Text_Lambda([this] { return FText::FromString(ReviewError); }).ColorAndOpacity(FMmdUiStyle::Colors().Warning).AutoWrapText(true)]
+            + SVerticalBox::Slot().AutoHeight().Padding(0,0,0,10)[Button(TEXT("选择 ZIP 压缩包"),[Weak]
+                { if (auto Self=Weak.Pin(); Self && Self->FinishGuide()) { Self->DeferredArchive.Reset(); Self->Controller->ImportArchive(); } })]
+            + SVerticalBox::Slot().AutoHeight()[Button(TEXT("我知道了"),[Weak]
+                { if (auto Self=Weak.Pin(); Self && Self->FinishGuide() && !Self->DeferredArchive.IsEmpty())
+                    { const FString Path=MoveTemp(Self->DeferredArchive); Self->Controller->LoadArchive(Path); } })]]);
+    }
+    void BeginFirstRun()
+    {
+#if WITH_DEV_AUTOMATION_TESTS
+        bQaSkipNotices = FParse::Param(FCommandLine::Get(),TEXT("MmdQaSkipNotices"));
+        if (bQaSkipNotices) return;
+#endif
+        SoftwareNotices = MmdNotices::Software(); NoticeHash = MmdNotices::Fingerprint(SoftwareNotices);
+        FirstRun.Load(FirstRunPath()); bNoticesAccepted = FirstRun.AcceptedHash == NoticeHash;
+        if (!bNoticesAccepted) ReviewSoftware(); else if (!FirstRun.bGuideSeen) ShowGuide();
+    }
+    bool RequestModelReview(const FString& Path, const FString& Root)
+    {
+        if (bQaSkipNotices || ApprovedModel == Path) { ApprovedModel.Reset(); return false; }
+        TWeakPtr<SMmdViewer> Weak = SharedThis(this);
+        FMmdNotice Notice = MmdNotices::Model(Root);
+        Notice.Title += TEXT(" · ") + FPaths::GetCleanFilename(Path);
+        ShowNotice(Notice, true, Root, [Weak,Path]
+        { if (auto Self=Weak.Pin()) { Self->ApprovedModel=Path; Self->CloseReview(); Self->Controller->LoadModel(Path); } },
+        [Weak] { if (auto Self=Weak.Pin()) { Self->CloseReview(); Self->Controller->bChoosing=true; Self->RefreshChoices(); } });
+        return true;
+    }
     TSharedPtr<SBox> PageHost;
     TSharedPtr<SVtuberRigPanel> MappingPanel;
     TSharedPtr<SVtuberCalibrationWizard> CalibrationPanel;
@@ -415,7 +506,7 @@ public:
             [SAssignNew(MenuLayer, SBorder)
                 .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
                 .BorderBackgroundColor(FLinearColor::Transparent).Padding(0).Clipping(EWidgetClipping::ClipToBounds)
-                .Visibility(EVisibility::Collapsed)
+                .Visibility(EVisibility::Collapsed).IsEnabled_Lambda([this] { return !bReviewOpen; })
                 [SNew(SCanvas)
                     + SCanvas::Slot().Position_Lambda([this] { return NavigationPosition; })
                         .Size_Lambda([this] { return NavigationSize; })[NavigationWindow]
@@ -427,6 +518,23 @@ public:
                     + SCanvas::Slot().Position_Lambda([this] { return ResultsPosition; }).Size_Lambda([this] { return ResultsSize; })
                         [SAssignNew(ResultsHost, SBox).Visibility_Lambda([this]
                             { return bResultsOpen ? EVisibility::Visible : EVisibility::Collapsed; })]]]
+            + SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Top).Padding(16)
+            [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(Panel.CopyWithNewOpacity(.85f)).Padding(10,6)
+                .Visibility(EVisibility::HitTestInvisible)
+                [SNew(STextBlock).ColorAndOpacity(Text).Font(FCoreStyle::GetDefaultFontStyle("Regular",12))
+                    .Text_Lambda([this] {
+                        const bool Fresh = Controller.IsValid() && Controller->Tracking.IsRunning()
+                            && FPlatformTime::Seconds() - Controller->LastTrackingFrame < .75;
+                        return FText::FromString(FString::Printf(TEXT("渲染 %.1f FPS\n识别 %.1f FPS"),
+                            Controller.IsValid() ? Controller->DisplayRenderFps : 0.f, Fresh ? Controller->Tracking.InferenceFps : 0.f));
+                    })]]
+            + SOverlay::Slot()
+            [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FLinearColor(0,0,0,.55f)).Padding(16)
+                .Visibility_Lambda([this] { return bReviewOpen ? EVisibility::Visible : EVisibility::Collapsed; })
+                .HAlign(HAlign_Center).VAlign(VAlign_Center)
+                [SAssignNew(ReviewHost,SBox)
+                    .WidthOverride_Lambda([this] { const float W=GetCachedGeometry().GetLocalSize().X; const float Preferred=bGuideOpen?620.f:720.f; return W>0?FMath::Clamp(W-32.f,1.f,Preferred):Preferred; })
+                    .HeightOverride_Lambda([this] { const float H=GetCachedGeometry().GetLocalSize().Y; const float Preferred=bGuideOpen?390.f:620.f; return H>0?FMath::Clamp(H-32.f,1.f,Preferred):Preferred; })]]
         ];
     }
     virtual void Tick(const FGeometry& Geometry, double Time, float Delta) override
@@ -445,11 +553,12 @@ public:
     }
     bool IsMenuBlocking() const
     {
-        return bHudVisible && (CurrentPage == "Choose" || CurrentPage == "Status")
-            && bMenuOpen;
+        return bReviewOpen || (bHudVisible && (CurrentPage == "Choose" || CurrentPage == "Status")
+            && bMenuOpen);
     }
     void ToggleHud()
     {
+        if (bReviewOpen) return;
         if (bHudVisible && MappingPanel) MappingPanel->FlushSave();
         bHudVisible = !bHudVisible;
         if (!bHudVisible && Controller.IsValid()) Controller->PreviewPart();
@@ -534,6 +643,7 @@ public:
     }
     void OpenPage(FName Page = "Main")
     {
+        if (bReviewOpen) return;
         if (Page == "Results") { OpenResults(); return; }
         if (Page == "Main") { CloseWindow(); bHudVisible = true; return; }
         if (MappingPanel) MappingPanel->FlushSave();
@@ -934,6 +1044,7 @@ public:
     virtual bool SupportsKeyboardFocus() const override { return true; }
     virtual FReply OnPreviewKeyDown(const FGeometry&, const FKeyEvent& Event) override
     {
+        if (bReviewOpen && (Event.GetKey() == EKeys::H || Event.GetKey() == EKeys::Escape)) return FReply::Handled();
         if (Event.GetKey() == EKeys::H) { ToggleHud(); return FReply::Handled(); }
         if (Event.GetKey() == EKeys::Escape) { if (!bHudVisible) ToggleHud(); else if (bMenuOpen) CloseWindow(); else ToggleHud(); return FReply::Handled(); }
         return FReply::Unhandled();
@@ -968,6 +1079,7 @@ public:
     }
     virtual FReply OnMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& Event) override
     {
+        if (bReviewOpen) return FReply::Handled();
         if (Event.GetEffectingButton() == EKeys::MiddleMouseButton && !PointerOnPanel(Geometry, Event))
         {
             bDragging = true;
@@ -988,11 +1100,13 @@ public:
     }
     virtual FReply OnMouseWheel(const FGeometry& Geometry, const FPointerEvent& Event) override
     {
+        if (bReviewOpen) return FReply::Handled();
         if (!PointerOnPanel(Geometry, Event)) Controller->Zoom(Event.GetWheelDelta());
         return FReply::Handled();
     }
     virtual FReply OnKeyDown(const FGeometry&, const FKeyEvent& Event) override
     {
+        if (bReviewOpen) return FReply::Unhandled();
         if (Event.GetKey() == EKeys::H) { ToggleHud(); return FReply::Handled(); }
         if (Event.GetKey() == EKeys::Escape) { if (!bHudVisible) ToggleHud(); else if (bMenuOpen) CloseWindow(); else ToggleHud(); return FReply::Handled(); }
         if (!IsMenuBlocking() && (Event.GetKey() == EKeys::W || Event.GetKey() == EKeys::A || Event.GetKey() == EKeys::S || Event.GetKey() == EKeys::D
@@ -1492,6 +1606,25 @@ void AMmdViewerController::BeginPlay()
 	SetBackground(0);
 	Widget = SNew(SMmdViewer, this); GEngine->GameViewport->AddViewportWidgetContent(Widget.ToSharedRef());
 	FInputModeUIOnly Input; Input.SetWidgetToFocus(Widget); Input.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock); SetInputMode(Input);
+    Widget->BeginFirstRun();
+#if WITH_DEV_AUTOMATION_TESTS
+    FString UiCapture;
+    if (FParse::Value(FCommandLine::Get(),TEXT("MmdUiCapture="),UiCapture))
+    {
+        FString Page;
+        if (FParse::Value(FCommandLine::Get(),TEXT("MmdUiCapturePage="),Page) && Page == TEXT("Guide"))
+        { Widget->bNoticesAccepted = true; Widget->ShowGuide(); }
+        else if (Page == TEXT("Rules"))
+        {
+            FString Root;
+            if (FParse::Value(FCommandLine::Get(),TEXT("MmdUiRulesRoot="),Root) && FPaths::DirectoryExists(Root))
+                Widget->ShowNotice(MmdNotices::Model(Root),true,Root,[] {},[] {});
+        }
+        FTimerHandle Shot, Exit;
+        GetWorldTimerManager().SetTimer(Shot,[UiCapture] { FScreenshotRequest::RequestScreenshot(UiCapture,true,false); },4.f,false);
+        GetWorldTimerManager().SetTimer(Exit,[] { FPlatformMisc::RequestExit(false); },8.f,false);
+    }
+#endif
 	FString AutoImport;
 	if (FParse::Value(FCommandLine::Get(), TEXT("MmdArchive="), AutoImport)) LoadArchive(AutoImport);
 }
@@ -1510,6 +1643,8 @@ void AMmdViewerController::EndPlay(const EEndPlayReason::Type Reason)
 
 void AMmdViewerController::ImportArchive()
 {
+    if (!Widget || !Widget->bNoticesAccepted || (Widget->bReviewOpen && !Widget->bGuideOpen)) return;
+    if (Widget->bGuideOpen && !Widget->FinishGuide()) return;
     Widget->CloseWindow();
 #if PLATFORM_WINDOWS
 	IFileOpenDialog* Dialog = nullptr;
@@ -1541,6 +1676,9 @@ void AMmdViewerController::ImportArchive()
 void AMmdViewerController::LoadArchive(const FString& Path)
 {
     if (bBusy) return;
+    if (!Widget->bNoticesAccepted) { Widget->DeferredArchive = Path; return; }
+    if (Widget->bGuideOpen) { if (!Widget->FinishGuide()) return; }
+    if (Widget->bReviewOpen) return;
     if (Enhancement.IsRunning()) { EnhancementNotice = TEXT("请先取消或等待增强任务，再导入其他模型。"); Widget->OpenPage("Generation"); return; }
     bHudVisibleBeforeImport = Widget.IsValid() && Widget->bHudVisible;
     bBusy = true; Status = TEXT("正在展开压缩包…"); Widget->OpenPage("Status");
@@ -1583,7 +1721,8 @@ void AMmdViewerController::LoadArchive(const FString& Path)
 
 void AMmdViewerController::LoadModel(const FString& Path)
 {
-    if (bBusy || !ModelChoices.Contains(Path)) return;
+    if (bBusy || !ModelChoices.Contains(Path) || !Widget->bNoticesAccepted || Widget->bReviewOpen) return;
+    if (Widget->RequestModelReview(Path, ImportDirectory)) return;
     if (!ImportTemplate || !ImportTemplate->MtoonUnlitSet) { Status = TEXT("缺少 VRM4U 默认导入资源。"); return; }
     Enhancement.Cancel(); bGenerationPending = false; ClearMaterialPreview();
     PendingPath = Path; bBusy = true; bChoosing = false; Status = TEXT("正在加载模型与贴图…"); Widget->OpenPage("Status");
@@ -1848,6 +1987,12 @@ void AMmdViewerController::OnModelLoaded()
 void AMmdViewerController::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
+    const float FrameSeconds = float(FApp::GetDeltaTime());
+    if (FMath::IsFinite(FrameSeconds) && FrameSeconds > 0)
+    {
+        RenderFrameSeconds = RenderFrameSeconds > 0 ? FMath::Lerp(RenderFrameSeconds, FrameSeconds, 1.f - FMath::Exp(-FrameSeconds / .3f)) : FrameSeconds;
+        DisplayRenderFps = 1.f / RenderFrameSeconds;
+    }
 #if WITH_DEV_AUTOMATION_TESTS
     int32 SingleUpscalingMode = INDEX_NONE;
     if (ModelMesh && UpscalingQaStep == 0 && FParse::Value(FCommandLine::Get(), TEXT("HonkaiUpscalingMode="), SingleUpscalingMode))
