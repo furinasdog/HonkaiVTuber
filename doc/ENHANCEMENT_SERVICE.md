@@ -2,7 +2,7 @@
 
 `FMmdEnhancement` runs `Prepare-MmdEnhancement.ps1` in a separate hidden process. The service polls a small atomic JSON status file; it does not block the game thread while Blender runs. Cancellation terminates only the task's owned process tree. The viewport retains its old materials until a successful output has passed the controller's profile checks.
 
-Data lives under `FPlatformProcess::UserSettingsDir()/HonkaiRendering`. `-MmdUserData=<absolute directory>` provides an isolated location for tests. Imports, tools, models, jobs and generated enhancements have separate subdirectories. Active jobs prevent cache clearing. Clearing removes only `Enhancements` and `Jobs`; it refuses directory junctions/reparse points and leaves `Imports`, `Tools` and `Models` intact.
+Data lives under `FPlatformProcess::UserSettingsDir()/<product>`, where `<product>` is `HonkaiRendering` or `HonkaiVTuber` for the corresponding application. `-MmdUserData=<absolute directory>` provides an isolated location for tests. Imports, tools, models, jobs and generated enhancements have separate subdirectories. Active jobs prevent cache clearing. Clearing removes only `Enhancements` and `Jobs`; it refuses directory junctions/reparse points and leaves `Imports`, `Tools` and `Models` intact.
 
 The job request contains `model`, `resource_root`, `data_root`, `scripts`, `material_index`, `parameters` (JSON text) and `force`. `material_index=-1` asks the worker to identify a face; ambiguous geometry returns candidates for user selection. The only generation parameter is `resolution`: 256, 512 (default) or 1024. Keep `-1` in the model settings for automatic selection so subsequent requests use the same identity.
 
@@ -24,4 +24,5 @@ Pinned checksums were verified against [Blender's 5.0.0 checksum file](https://d
 
 `python Scripts/test_enhancement_service.py` exercises real Windows/.NET cache key changes, atomic status replacement, safe ZIP extraction and rejected download origins without requiring Blender or network. UE automation `HonkaiRendering.Enhancement.Storage` checks settings persistence, path bounds, portable export and overwrite refusal. The worker also has its separate tests in `test_enhancement.py`.
 
-Local integration evidence is under `Saved/Tests/EnhancementBackend`: real Blender generation, cache reuse, forced generation/new-version reuse, invalid-parameter failure, cancellation while preserving published cache indices, official MMD Tools ZIP download/extraction, rejected SHA256 mismatch and a real 404 download failure. The full Blender portable package was not downloaded on this machine because a compatible local installation is already available. GPU/UI application and restart checks are recorded separately by the viewer integration workflow.
+
+For integration testing, exercise generation with a compatible local Blender, cache reuse, cancellation, failed validation and fresh publication. Verify GPU application and restart separately; unit tests do not establish those results. Do not redistribute source models or generated maps without permission.

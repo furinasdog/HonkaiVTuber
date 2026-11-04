@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Check Python syntax
-        run: python -m py_compile Scripts/setup_viewer.py Scripts/test_archive.py Scripts/compare_renders.py Scripts/bake_face_coordinates.py Scripts/generate_face_map.py Scripts/generate_enhancement.py Scripts/test_enhancement.py Scripts/test_enhancement_service.py
+        run: python -m py_compile Scripts/setup_viewer.py Scripts/test_archive.py Scripts/bake_face_coordinates.py Scripts/generate_face_map.py Scripts/generate_enhancement.py Scripts/test_enhancement.py Scripts/test_enhancement_service.py
       - name: Test Windows ZIP extraction
         run: python Scripts/test_archive.py
 

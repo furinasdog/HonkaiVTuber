@@ -50,8 +50,8 @@ initialization writes `state: failed` and raises, producing exit code 1 when the
 recommended Blender arguments are used. Invalid staging paths are rejected
 before any existing files are changed; the parent reports the nonzero exit.
 
-Run `test_enhancement.py` in Blender's bundled Python (or a Python with NumPy) for
+Run `Scripts/test_enhancement.py` in Blender's bundled Python (or a Python with NumPy) for
 coordinate monotonicity/mirroring, disconnected UV regions, binary nose-mask
 bounds, RGB-profile fallback, ambiguous material selection and input checks.
-The four-model end-to-end generation evidence is local under
-`Saved/Tests/WorkerFinal*`; user assets and derived maps are not redistributed.
+
+For end-to-end checks, use a legally obtained local fixture, verify the profile and output hashes, and inspect the generated maps in the host. Keep fixtures and derived images outside version control and distribution packages.
