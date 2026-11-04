@@ -17,9 +17,6 @@ public class HonkaiRendering : ModuleRules
 			"Engine",
 			"InputCore",
 			"EnhancedInput",
-			"AIModule",
-			"StateTreeModule",
-			"GameplayStateTreeModule",
 			"UMG",
 			"Slate"
 		});
@@ -33,29 +30,6 @@ public class HonkaiRendering : ModuleRules
 			PublicSystemLibraries.AddRange(new string[] { "ole32.lib", "uuid.lib" });
 		}
 
-		PublicIncludePaths.AddRange(new string[] {
-			"HonkaiRendering",
-			"HonkaiRendering/Variant_Platforming",
-			"HonkaiRendering/Variant_Platforming/Animation",
-			"HonkaiRendering/Variant_Combat",
-			"HonkaiRendering/Variant_Combat/AI",
-			"HonkaiRendering/Variant_Combat/Animation",
-			"HonkaiRendering/Variant_Combat/Gameplay",
-			"HonkaiRendering/Variant_Combat/Interfaces",
-			"HonkaiRendering/Variant_Combat/UI",
-			"HonkaiRendering/Variant_SideScrolling",
-			"HonkaiRendering/Variant_SideScrolling/AI",
-			"HonkaiRendering/Variant_SideScrolling/Gameplay",
-			"HonkaiRendering/Variant_SideScrolling/Interfaces",
-			"HonkaiRendering/Variant_SideScrolling/UI"
-		});
-
-		// Uncomment if you are using Slate UI
-		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
-
-		// Uncomment if you are using online features
-		// PrivateDependencyModuleNames.Add("OnlineSubsystem");
-
-		// To include OnlineSubsystemSteam, add it to the plugins section in your uproject file with the Enabled attribute set to true
+		PublicIncludePaths.Add(ModuleDirectory);
 	}
 }
