@@ -1883,6 +1883,11 @@ void AMmdViewerController::OnModelLoaded()
     ModelInfo = FString::Printf(TEXT("%s 个顶点\n%s 个三角形\n%d 个材质\n\nVRM4U"), *FText::AsNumber(Vertices).ToString(), *FText::AsNumber(Triangles).ToString(), Mesh->GetNumMaterials());
     Rotation = FRotator(-5, 180, 0);
     FParse::Value(FCommandLine::Get(), TEXT("MmdViewYaw="), Rotation.Yaw);
+#if WITH_DEV_AUTOMATION_TESTS
+    float ViewPitch = Rotation.Pitch;
+    if (FParse::Value(FCommandLine::Get(), TEXT("MmdViewPitch="), ViewPitch) && FMath::IsFinite(ViewPitch))
+        Rotation.Pitch = FMath::Clamp(ViewPitch, -80.f, 80.f);
+#endif
     FocusModel();
     float FrameScale = 1.f, TargetHeight = 1.f;
     FParse::Value(FCommandLine::Get(), TEXT("MmdFrameScale="), FrameScale);
