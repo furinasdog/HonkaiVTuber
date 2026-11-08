@@ -20,6 +20,8 @@
 ```powershell
 git submodule sync --recursive
 git submodule update --init --recursive
+# Assimp 源码默认 update=none；发行检查需要完整核对递归版本。
+git -C Plugins/VRM4U submodule update --init --checkout ThirdParty/assimp-source
 ```
 
 不要通过 `git submodule update --remote` 取得未经验证的依赖。两仓内部均使用 `HonkaiRendering.uproject`、`HonkaiRenderingEditor` 和 `HonkaiRendering` target；产品名从 `Config/DefaultGame.ini` 读取。
@@ -49,9 +51,11 @@ git submodule update --init --recursive
 关闭占用**本项目**二进制的编辑器，确认希望发布的源码已提交。在仓库根目录执行：
 
 ```powershell
-./Scripts/Build-Release.ps1 -CheckOnly
-./Scripts/Build-Release.ps1
+pwsh -NoProfile -File ./Scripts/Build-Release.ps1 -CheckOnly
+pwsh -NoProfile -File ./Scripts/Build-Release.ps1
 ```
+
+请从仓库根目录运行。Windows 自带的 `powershell.exe` 5.1 不满足脚本的版本要求；使用 `pwsh`。引擎未自动找到时追加 `-EngineRoot 'D:/Epic Games/UE_5.8'` 并替换为自己的实际路径。
 
 `-CheckOnly` 检查依赖与许可，不运行编译和烘焙。正式流程先编译编辑器目标，再构建 Win64 Shipping、烘焙、审核完整资产清单并打包。失败立即终止；检查 `Saved/ReleaseBuilds` 和 UAT 日志，已有发行目录不会被覆盖。同一工作区一次只运行一个构建。
 

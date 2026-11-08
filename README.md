@@ -12,10 +12,12 @@ An open-source Windows MMD VTuber application with toon rendering for UE 5.8. Th
 | [HonkaiVTuber](https://github.com/furinasdog/HonkaiVTuber) | 以摄像头动捕、表情映射和直播输出为主 |
 | [HonkaiToonRenderer](https://github.com/furinasdog/HonkaiToonRenderer) | 可供其他 UE 项目使用的通用卡通渲染插件 |
 | [MotionCapture](https://github.com/furinasdog/MotionCapture) | 独立维护的 UE 摄像头识别插件 |
+| [VRM4U 适配分支](https://github.com/furinasdog/VRM4U/tree/honkai-rendering/ue5.8) | PMX 导入、材质属性与 Bullet 物理桥接；保留上游归属 |
 
 两个应用目前共享渲染、导入与动捕功能，均默认使用窗口模式、灰色背景并隐藏菜单，不自动开启摄像头。PMX 解析使用 VRM4U/Assimp，物理使用 PMX 自带的刚体、关节与碰撞组，不为特定角色编写修补逻辑。
 
 - 拖入 ZIP，在视口内选择 PMX 并阅读模型使用守则。
+- 共享多色阶 Toon Ramp、双层彩色高光及带距离补偿的视空间描边；增强面部与身体采用一致的配色路径。
 - Blender 风格的基本视角操作，可调整背景、抗锯齿与默认手臂角度。
 - 面部、头部、上半身及双手识别，摄像头关键点预览、手工映射与逐步标定向导。
 - 可选的面部增强数据生成、部件显隐及 Spout 输出。
@@ -24,6 +26,10 @@ An open-source Windows MMD VTuber application with toon rendering for UE 5.8. Th
 这是持续开发的渲染研究与工具项目，不保证与原游戏画面完全一致。模型骨骼、表情、贴图和物理数据会影响结果；极端动作、接触与部分模型仍可能出现穿插或抖动。完整能力边界见[使用说明](doc/USAGE.md)。
 
 ## 开始使用
+
+[下载 HonkaiVTuber v0.1.0](https://github.com/furinasdog/HonkaiVTuber/releases/tag/v0.1.0)。下载 Release 附件中的 **Windows x64 ZIP**，完整解压后运行；GitHub 自动生成的 **Source code** 是源码，不能直接启动。
+
+运行发行包不需要安装 UE 编辑器、Python 或 Node.js。首次版本已在 Windows x64 验证；其他平台不受支持，显卡和驱动需支持 DirectX 12。
 
 取得完整的 Windows 发行目录后，双击 `HonkaiRendering.exe`，保留其旁边所有依赖目录。仓库源码不能直接作为应用启动；自行编译见[构建文档](doc/BUILD.md)。
 
@@ -41,7 +47,7 @@ git clone --recurse-submodules https://github.com/furinasdog/HonkaiVTuber.git
 cd HonkaiVTuber
 ```
 
-按[构建文档](doc/BUILD.md)准备本地依赖，再运行 `./Scripts/Build-Release.ps1 -CheckOnly` 检查；依赖缺失时不会自动安装。
+按[构建文档](doc/BUILD.md)准备本地依赖，在 **PowerShell 7.2+** 中运行 `pwsh -NoProfile -File ./Scripts/Build-Release.ps1 -CheckOnly` 检查；依赖缺失时不会自动安装。
 
 ## 文档与参与
 
@@ -49,6 +55,7 @@ cd HonkaiVTuber
 - [Windows 构建](doc/BUILD.md)
 - [架构、依赖与开发验证](doc/DEVELOPMENT.md)
 - [贡献指南](CONTRIBUTING.md)
+- [安全问题报告](SECURITY.md)与[社区行为准则](CODE_OF_CONDUCT.md)
 
 反馈问题时提供“应用 → 关于”中的版本、复现步骤和经过脱敏的日志。不要公开上传无权再分发的模型或录屏。
 
