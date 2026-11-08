@@ -681,7 +681,7 @@ public:
         else if (Page == "About")
         {
             Title = TEXT("关于");
-            const FString Product(TEXT("HonkaiVTuber"));
+            const FString Product(TEXT("HonkaiRendering"));
 #if defined(HONKAI_BUILD_STAMP)
             const FString Version(HONKAI_BUILD_STAMP);
             const FString BuildTime(HONKAI_BUILD_TIME);
@@ -1775,6 +1775,8 @@ void AMmdViewerController::OnModelLoaded()
             if (!Source->GetTextureParameterValue(TEXT("mtoon_tex_MainTex"), Texture)) Source->GetTextureParameterValue(TEXT("gltf_tex_diffuse"), Texture);
             if (!Source->GetVectorParameterValue(TEXT("mtoon_Color"), Input.Tint)) Source->GetVectorParameterValue(TEXT("gltf_basecolor"), Input.Tint);
             Source->GetScalarParameterValue(TEXT("mmd_ToonEnabled"), Input.ToonStrength);
+            Source->GetVectorParameterValue(TEXT("mmd_SpecularColor"), Input.SpecularColor);
+            Source->GetScalarParameterValue(TEXT("mmd_Shininess"), Input.Shininess);
             Source->GetTextureParameterValue(TEXT("mmd_ToonTexture"), ToonTexture);
             Source->GetTextureParameterValue(TEXT("mmd_SphereTexture"), SphereTexture);
             Source->GetScalarParameterValue(TEXT("mmd_SphereMode"), Input.SphereMode);
